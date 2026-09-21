@@ -1,0 +1,124 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { getStorage, hashKey } from '@/lib/storage';
+import type { NewReport, ServiceType, TipBase } from '@/lib/storage';
+
+const SERVICE_TYPES: ServiceType[] = ['counter', 'table', 'takeout', 'nonfood'];
+const FEE_VALUES = new Set(['service-charge', 'card-surcharge', 'none', 'other']);
+const TIP_BASE_VALUES: TipBase[] = ['pre-tax', 'post-tax', 'not-sure'];
+const GUILT_VALUES = new Set(['yes', 'no', 'skip']);
+/** Evidence must be reviewed+confirmed by the uploader before it can be attached. */
+const CONFIRMED_STATUSES = new Set(['confirmed', 'manual']);
+
+function clientIp(req: NextRequest): string {
+  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
+}
+
+/**
+ * POST /api/submissions
+ *
+ * Receipt-first submission endpoint (Sprint 1). Accepts multipart/form-data
+ * built by the multi-step form at /submit. Reports are created with
+ * moderationStatus 'pending' — they do NOT appear in rankings until approved.
+ */
+export async function POST(req: NextRequest) {
+  const ip = clientIp(req);
+  const storage = getStorage();
+
+  let form: FormData;
+  try {
+    form = await req.formData();
+  } catch {
+    return NextResponse.json({ ok: false, error: 'Could not read the form.' }, { status: 400 });
+  }
+  const str = (k: string): string => {
+    const v = form.get(k);
+    return typeof v === 'string' ? v.trim() : '';
+  };
+
+  // Honeypot: bots fill it; silently accept and discard.
+  if (str('website')) {
+    return NextResponse.json({ ok: true });
+  }
+
+  const rl = await storage.checkRateLimit('submit:' + ip, 5, 3600_000);
+  if (!rl.allowed) {
+    return NextResponse.json(
+      { ok: false, error: 'Too many submissions — please try again later.' },
+      { status: 429 },
+    );
+  }
+
+  const venueName = str('venueName');
+  const city = str('city');
+  const serviceType = str('serviceType') as ServiceType;
+  if (!venueName || !city) {
+    return NextResponse.json(
+      { ok: false, error: 'Venue name and city are required.' },
+      { status: 400 },
+    );
+  }
+  if (!SERVICE_TYPES.includes(serviceType)) {
+    return NextResponse.json({ ok: false, error: 'Invalid service type.' }, { status: 400 });
+  }
+
+  // Evidence: every attached item must exist and have been reviewed + confirmed
+  // by the uploader in step 2 (redaction review gate).
+  let evidenceIds: string[] = [];
+  const evidenceRaw = str('evidenceIds');
+  if (evidenceRaw) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(evidenceRaw);
+    } catch {
+      return NextResponse.json({ ok: false, error: 'Invalid evidence list.' }, { status: 400 });
+    }
+    if (!Array.isArray(parsed) || !parsed.every((e) => typeof e === 'string')) {
+      return NextResponse.json({ ok: false, error: 'Invalid evidence list.' }, { status: 400 });
+    }
+    evidenceIds = [...new Set(parsed)];
+    for (const eid of evidenceIds) {
+      const ev = await storage.getEvidence(eid);
+      if (!ev || !ev.userConfirmed || !CONFIRMED_STATUSES.has(ev.redactionStatus)) {
+        return NextResponse.json(
+          { ok: false, error: 'Evidence must be reviewed and confirmed first.' },
+          { status: 400 },
+        );
+      }
+      // One photo, one report: never steal another report's evidence link.
+      if (ev.reportId) {
+        return NextResponse.json(
+          { ok: false, error: 'This photo is already attached to another report.' },
+          { status: 400 },
+        );
+      }
+    }
+  }
+
+  const fees = form
+    .getAll('fees')
+    .filter((v): v is string => typeof v === 'string' && FEE_VALUES.has(v));
+
+  const tipBaseRaw = str('tipBase');
+  const guiltRaw = str('guilt');
+
+  const venue = await storage.findOrCreateVenue(venueName, city, str('area'));
+
+  const report = await storage.createReport({
+    venueId: venue.id,
+    venueName,
+    city,
+    area: str('area'),
+    serviceType,
+    screenPresentation: str('screenPresentation'),
+    presets: str('presets'),
+    tipBase: (TIP_BASE_VALUES.includes(tipBaseRaw as TipBase) ? tipBaseRaw : '') as NewReport['tipBase'],
+    fees,
+    guilt: (GUILT_VALUES.has(guiltRaw) ? guiltRaw : 'skip') as NewReport['guilt'],
+    experienceNote: str('experienceNote'),
+    notes: str('notes'),
+    evidenceIds,
+    reporterHash: hashKey(ip),
+  } satisfies NewReport);
+
+  return NextResponse.json({ ok: true, id: report.id });
+}
