@@ -1,28 +1,14 @@
 import { NextRequest, NextResponse } from 'next/server';
-import crypto from 'crypto';
-import fs from 'fs';
-import path from 'path';
-import { readReports, writeReports, summarize, Report } from '@/lib/store';
+import { getStorage } from '@/lib/storage';
+import type { Evidence, Report, Venue } from '@/lib/storage';
+import { aggregateBackedFacts, aggregateConsensus, summarizeVenues } from '@/lib/score';
+import type { VenueCard } from '@/lib/score';
 
-const SERVICE_TYPES = new Set(['counter', 'table', 'takeout', 'nonfood']);
-const FEE_VALUES = new Set(['service-charge', 'card-surcharge', 'none', 'other']);
-const TIP_BASE_VALUES = new Set(['pre-tax', 'post-tax', 'not-sure']);
-const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-
-// Simple in-memory rate limit: 5 submissions per IP per rolling hour.
-const hits = new Map<string, number[]>();
-function allowed(ip: string): boolean {
-  const now = Date.now();
-  const arr = (hits.get(ip) ?? []).filter((t) => now - t < 3600_000);
-  if (arr.length >= 5) return false;
-  arr.push(now);
-  hits.set(ip, arr);
-  return true;
-}
-
-function clientIp(req: NextRequest): string {
-  return req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 'unknown';
-}
+/**
+ * GET /api/venues?q=&city=&service=&sort=
+ * Public ranking data. Approved reports only; scoring is evidence-backed.
+ */
+export const dynamic = 'force-dynamic';
 
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -31,111 +17,55 @@ export async function GET(req: NextRequest) {
   const service = searchParams.get('service') || '';
   const sort = searchParams.get('sort') || 'score';
 
-  const all = summarize(readReports());
-  let venues = all;
-  if (q) venues = venues.filter((v) => v.venueName.toLowerCase().includes(q));
-  if (city) venues = venues.filter((v) => v.city === city);
-  if (service) venues = venues.filter((v) => v.serviceType === service);
-
-  venues = [...venues].sort((a, b) => {
-    if (sort === 'name') return a.venueName.localeCompare(b.venueName);
-    if (sort === 'reports') return b.reports - a.reports;
-    // score desc; "few reports" (null) last
-    const sa = a.score === null ? -1 : a.score;
-    const sb = b.score === null ? -1 : b.score;
-    return sb - sa;
+  const store = getStorage();
+  const venues: Venue[] = await store.listVenues();
+  const approved: Report[] = await store.listReports({
+    status: 'approved',
+    includeSeeds: true,
   });
 
-  const cities = [...new Set(all.map((v) => v.city))].sort();
-  return NextResponse.json({ venues, cities });
-}
-
-export async function POST(req: NextRequest) {
-  const ip = clientIp(req);
-
-  let form: FormData;
-  try {
-    form = await req.formData();
-  } catch {
-    return NextResponse.json({ ok: false, error: 'Could not read the form.' }, { status: 400 });
-  }
-  const str = (k: string): string => {
-    const v = form.get(k);
-    return typeof v === 'string' ? v.trim() : '';
-  };
-
-  // Honeypot: bots fill it; silently accept and discard.
-  if (str('website')) {
-    return NextResponse.json({ ok: true });
+  const evidenceById = new Map<string, Evidence>();
+  const evidenceLists = await Promise.all(
+    approved.map((r) => store.listEvidenceForReport(r.id)),
+  );
+  for (const list of evidenceLists) {
+    for (const e of list) evidenceById.set(e.id, e);
   }
 
-  if (!allowed(ip)) {
-    return NextResponse.json(
-      { ok: false, error: 'Too many submissions — please try again later.' },
-      { status: 429 },
-    );
+  let cards: VenueCard[] = summarizeVenues(venues, approved, evidenceById);
+
+  // Backed service type is needed for the service filter; computed from the
+  // same evidence-backed aggregation used for scoring, falling back to
+  // community consensus when no screen evidence backs it yet.
+  const serviceTypeByVenue = new Map<string, string>();
+  for (const venue of venues) {
+    const rs = approved
+      .filter((r) => r.venueId === venue.id)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const backed = aggregateBackedFacts(rs, evidenceById).serviceType;
+    serviceTypeByVenue.set(venue.id, backed || aggregateConsensus(rs).serviceType);
   }
 
-  const venueName = str('venueName');
-  const city = str('city');
-  const serviceType = str('serviceType');
-  if (!venueName || !city) {
-    return NextResponse.json(
-      { ok: false, error: 'Venue name and city are required.' },
-      { status: 400 },
-    );
+  if (q) {
+    cards = cards.filter((c) => c.venue.name.toLowerCase().includes(q));
   }
-  if (!SERVICE_TYPES.has(serviceType)) {
-    return NextResponse.json({ ok: false, error: 'Invalid service type.' }, { status: 400 });
+  if (city) {
+    cards = cards.filter((c) => c.venue.city === city);
+  }
+  if (service) {
+    cards = cards.filter((c) => serviceTypeByVenue.get(c.venue.id) === service);
   }
 
-  const fees = form
-    .getAll('fees')
-    .filter((v): v is string => typeof v === 'string' && FEE_VALUES.has(v));
+  cards = [...cards].sort((a, b) => {
+    if (sort === 'name') return a.venue.name.localeCompare(b.venue.name);
+    if (sort === 'reports') return b.approvedCount - a.approvedCount;
+    // score desc; null ("awaiting evidence") last
+    const sa = a.score === null ? -1 : a.score.score;
+    const sb = b.score === null ? -1 : b.score.score;
+    if (sb !== sa) return sb - sa;
+    return b.approvedCount - a.approvedCount;
+  });
 
-  // Optional photo upload (stored locally for v1; see README for the S3 TODO).
-  let photoPath: string | null = null;
-  const photo = form.get('photo');
-  if (photo && typeof photo !== 'string' && photo.size > 0) {
-    if (!photo.type.startsWith('image/')) {
-      return NextResponse.json({ ok: false, error: 'Photo must be an image file.' }, { status: 400 });
-    }
-    if (photo.size > MAX_PHOTO_BYTES) {
-      return NextResponse.json(
-        { ok: false, error: 'Photo must be smaller than 10 MB.' },
-        { status: 400 },
-      );
-    }
-    const rawExt = (photo.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '');
-    const ext = rawExt || 'jpg';
-    const fname = crypto.randomBytes(8).toString('hex') + '.' + ext;
-    const dir = path.join(process.cwd(), 'public', 'uploads');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, fname), Buffer.from(await photo.arrayBuffer()));
-    photoPath = '/uploads/' + fname;
-  }
-
-  const tipBaseRaw = str('tipBase');
-  const report: Report = {
-    id: crypto.randomBytes(8).toString('hex'),
-    venueName,
-    city,
-    area: str('area'),
-    serviceType: serviceType as Report['serviceType'],
-    screenPresentation: str('screenPresentation'),
-    presets: str('presets'),
-    tipBase: (TIP_BASE_VALUES.has(tipBaseRaw) ? tipBaseRaw : '') as Report['tipBase'],
-    fees,
-    photoPath,
-    notes: str('notes'),
-    email: str('email'),
-    verified: photoPath !== null, // photo-backed = verified, text-only = unverified
-    createdAt: new Date().toISOString(),
-  };
-
-  const reports = readReports();
-  reports.push(report);
-  writeReports(reports);
-
-  return NextResponse.json({ ok: true, id: report.id });
+  const cities = [...new Set(venues.map((v) => v.city))].sort();
+  return NextResponse.json({ venues: cards, cities });
 }

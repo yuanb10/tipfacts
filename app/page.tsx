@@ -1,33 +1,47 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import type { VenueSummary } from '@/lib/store';
-import { SERVICE_TYPE_LABELS, TIP_BASE_LABELS, FEE_LABELS } from '@/lib/labels';
+import type { VenueCard } from '@/lib/score';
+import { SERVICE_TYPE_LABELS } from '@/lib/labels';
 
 interface ApiResponse {
-  venues: VenueSummary[];
+  venues: VenueCard[];
   cities: string[];
 }
 
-function ScoreBadge({ score }: { score: number | null }) {
-  if (score === null) {
+function ScoreBadge({
+  score,
+  approvedCount,
+}: {
+  score: VenueCard['score'];
+  approvedCount: number;
+}) {
+  if (score != null) {
+    return (
+      <div className="score-badge">
+        <div className="score-num">{score.score}</div>
+        <div className="score-label">truth score</div>
+      </div>
+    );
+  }
+  if (approvedCount > 0) {
     return (
       <div className="score-badge few">
-        <div className="score-num">Few reports</div>
+        <div className="score-num">Awaiting evidence</div>
         <div className="score-label">not scored yet</div>
       </div>
     );
   }
   return (
-    <div className="score-badge">
-      <div className="score-num">{score}</div>
-      <div className="score-label">truth score</div>
+    <div className="score-badge few">
+      <div className="score-num">No reports yet</div>
+      <div className="score-label">not scored yet</div>
     </div>
   );
 }
 
 export default function RankingPage() {
-  const [venues, setVenues] = useState<VenueSummary[]>([]);
+  const [venues, setVenues] = useState<VenueCard[]>([]);
   const [cities, setCities] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState('');
@@ -62,7 +76,8 @@ export default function RankingPage() {
       <h1 className="page-title">Tipping facts, venue by venue</h1>
       <p className="page-sub">
         Objective facts about how venues handle tipping — presets, pre/post-tax, fees. No
-        opinions, no shaming. Higher truth score = more aggressive tipping practices.
+        opinions, no shaming. Higher truth score = more aggressive tipping practices. Only
+        photo-verified facts affect the score.
       </p>
 
       <div className="filters">
@@ -109,36 +124,32 @@ export default function RankingPage() {
       ) : (
         <div className="venue-list">
           {venues.map((v) => (
-            <a key={v.id} href={'/venue/' + v.id} className="venue-card">
+            <a key={v.venue.id} href={'/venue/' + v.venue.id} className="venue-card">
               <div className="venue-top">
                 <div>
-                  <h2 className="venue-name">{v.venueName}</h2>
+                  <h2 className="venue-name">{v.venue.name}</h2>
                   <p className="venue-loc">
-                    {v.city}
-                    {v.area ? ' · ' + v.area : ''}
+                    {v.venue.city}
+                    {v.venue.area ? ' · ' + v.venue.area : ''}
                   </p>
                 </div>
-                <ScoreBadge score={v.score} />
+                <ScoreBadge score={v.score} approvedCount={v.approvedCount} />
               </div>
               <div className="venue-facts">
-                <span className="fact-chip">{SERVICE_TYPE_LABELS[v.serviceType]}</span>
-                {v.presets && <span className="fact-chip">Presets: {v.presets}</span>}
-                {v.tipBase && TIP_BASE_LABELS[v.tipBase] && (
-                  <span className="fact-chip">{TIP_BASE_LABELS[v.tipBase]}</span>
-                )}
-                {v.fees.map((f) => (
-                  <span key={f} className="fact-chip">
-                    {FEE_LABELS[f] ?? f}
-                  </span>
-                ))}
                 <span className="fact-chip">
-                  {v.reports} report{v.reports === 1 ? '' : 's'}
+                  {v.approvedCount} report{v.approvedCount === 1 ? '' : 's'}
                 </span>
-                {v.verified ? (
+                {v.unverifiedCount > 0 && (
+                  <span className="fact-chip">
+                    {v.unverifiedCount} unverified
+                  </span>
+                )}
+                {v.score && v.score.evidenceCount > 0 ? (
                   <span className="verified-chip">Verified</span>
                 ) : (
                   <span className="unverified-chip">Unverified</span>
                 )}
+                {v.venue.isSeed && <span className="fact-chip">Seed data</span>}
               </div>
             </a>
           ))}

@@ -24,3 +24,9 @@ export const FEE_LABELS: Record<string, string> = {
   none: 'None',
   other: 'Other',
 };
+
+export const GUILT_LABELS: Record<string, string> = {
+  yes: 'Felt tipping pressure',
+  no: 'No pressure',
+  skip: 'Skipped',
+};
