@@ -1,5 +1,8 @@
 node_modules/
 .next/
 data/db.json
+data/uploads-private/
 public/uploads/*
 !public/uploads/.gitkeep
+.env
+.env*.local

@@ -1,1 +1,27 @@
-{"dependencies":{"next":"latest","react":"latest","react-dom":"latest"},"devDependencies":{"@types/node":"latest","@types/react":"latest","@types/react-dom":"latest","typescript":"latest"},"name":"tipfacts","private":true,"scripts":{"build":"next build","dev":"next dev","seed":"node scripts/seed.mjs","start":"next start","wipe":"rm -f data/db.json && rm -f public/uploads/seed-*.svg"},"version":"0.1.0"}
+{
+  "dependencies": {
+    "@types/pg": "^8.23.1",
+    "next": "latest",
+    "pg": "^8.23.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "sharp": "^0.35.4"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "typescript": "latest"
+  },
+  "name": "tipfacts",
+  "private": true,
+  "scripts": {
+    "build": "next build",
+    "dev": "next dev",
+    "seed": "node scripts/seed.ts",
+    "start": "next start",
+    "wipe": "node scripts/wipe.ts",
+    "migrate": "node scripts/migrate.ts"
+  },
+  "version": "0.1.0"
+}
