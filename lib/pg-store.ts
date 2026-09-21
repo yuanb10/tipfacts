@@ -270,7 +270,7 @@ export class PostgresStore implements Storage {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(`DELETE FROM rate_limit_hits WHERE ts < now() - make_interval(msecs => $1)`, [windowMs]);
+      await client.query(`DELETE FROM rate_limit_hits WHERE ts < now() - ($1 * interval '1 millisecond')`, [windowMs]);
       const { rows } = await client.query('SELECT count(*)::int AS n FROM rate_limit_hits WHERE key = $1', [k]);
       const n: number = rows[0].n;
       if (n >= limit) {
