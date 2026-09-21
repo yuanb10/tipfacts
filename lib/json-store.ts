@@ -163,10 +163,10 @@ export class JsonStore implements Storage {
       createdAt: now,
     };
     db.reports.push(report);
-    // Back-link evidence rows.
+    // Back-link evidence rows — but never steal a link that already exists.
     for (const eid of report.evidenceIds) {
       const ev = db.evidence.find((e) => e.id === eid);
-      if (ev) ev.reportId = report.id;
+      if (ev && !ev.reportId) ev.reportId = report.id;
     }
     this.write(db);
     return report;

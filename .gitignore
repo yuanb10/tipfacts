@@ -1,5 +1,6 @@
 node_modules/
 .next/
+*.tsbuildinfo
 data/db.json
 data/uploads-private/
 public/uploads/*

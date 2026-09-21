@@ -157,8 +157,9 @@ export class PostgresStore implements Storage {
       ],
     );
     const report = toReport(rows[0]);
+    // Back-link evidence rows — but never steal a link that already exists.
     for (const eid of report.evidenceIds) {
-      await this.pool.query('UPDATE evidence SET report_id = $1 WHERE id = $2', [id, eid]);
+      await this.pool.query('UPDATE evidence SET report_id = $1 WHERE id = $2 AND report_id IS NULL', [id, eid]);
     }
     return report;
   }
