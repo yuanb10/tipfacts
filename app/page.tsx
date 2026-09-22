@@ -9,6 +9,12 @@ interface ApiResponse {
   cities: string[];
 }
 
+function scoreLevel(score: number): 'hot' | 'mid' | 'low' {
+  if (score >= 70) return 'hot';
+  if (score >= 40) return 'mid';
+  return 'low';
+}
+
 function ScoreBadge({
   score,
   approvedCount,
@@ -18,7 +24,7 @@ function ScoreBadge({
 }) {
   if (score != null) {
     return (
-      <div className="score-badge">
+      <div className={`score-badge ${scoreLevel(score.score)}`} title={`Truth score ${score.score} of 100`}>
         <div className="score-num">{score.score}</div>
         <div className="score-label">truth score</div>
       </div>
@@ -73,21 +79,33 @@ export default function RankingPage() {
 
   return (
     <div>
-      <h1 className="page-title">Tipping facts, venue by venue</h1>
-      <p className="page-sub">
-        Objective facts about how venues handle tipping — presets, pre/post-tax, fees. No
-        opinions, no shaming. Higher truth score = more aggressive tipping practices. Only
-        photo-verified facts affect the score.
-      </p>
+      <div className="hero">
+        <p className="eyebrow">The tipping-pressure database</p>
+        <h1 className="page-title">
+          Who’s <span className="hl">squeezing</span>
+          <br />
+          the screen today?
+        </h1>
+        <p className="page-sub">
+          Objective facts about how venues handle tipping — presets, pre/post-tax math,
+          counter vs. table, hidden fees. Higher truth score = more aggressive tipping
+          practices. Only photo-verified facts move the score.
+        </p>
+      </div>
 
       <div className="filters">
-        <input
-          type="search"
-          placeholder="Search venue name…"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          aria-label="Search venues"
-        />
+        <div className="search-wrap">
+          <span className="search-icon" aria-hidden="true">
+            ⌕
+          </span>
+          <input
+            type="search"
+            placeholder="Search a venue…"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            aria-label="Search venues"
+          />
+        </div>
         <select value={city} onChange={(e) => setCity(e.target.value)} aria-label="Filter by city">
           <option value="">All cities</option>
           {cities.map((c) => (
@@ -113,6 +131,13 @@ export default function RankingPage() {
           <option value="reports">Sort: reports</option>
           <option value="name">Sort: name</option>
         </select>
+      </div>
+
+      <div className="list-head">
+        <h2>The leaderboard</h2>
+        <span className="count">
+          {venues.length} venue{venues.length === 1 ? '' : 's'}
+        </span>
       </div>
 
       {loading && venues.length === 0 ? (

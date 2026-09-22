@@ -184,6 +184,7 @@ export default async function ModeratePage({
 
   return (
     <main className="page">
+      <p className="eyebrow">Backstage</p>
       <h1 className="page-title">Moderation queue</h1>
       <p className="page-sub">
         {withEvidence.length === 0
@@ -202,7 +203,7 @@ export default async function ModeratePage({
         ))
       )}
 
-      <h2 className="page-title" style={{ fontSize: 20, marginTop: 32 }}>Recently decided</h2>
+      <h2 style={{ fontSize: '1.5rem', margin: '32px 0 12px' }}>Recently decided</h2>
       {recent.length === 0 ? (
         <p className="page-sub">No decisions yet.</p>
       ) : (

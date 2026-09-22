@@ -99,24 +99,24 @@ const KIND_LABEL: Record<EvidenceKind, string> = {
 };
 
 function Stepper({ step }: { step: Step }) {
-  const labels = ['Evidence', 'Review', 'Facts'];
+  const labels = ['Proof', 'Redaction check', 'The facts'];
   return (
-    <p className="hint" aria-label="Progress">
+    <div className="stepper" aria-label="Progress">
       {labels.map((label, i) => (
-        <span key={label}>
-          {i > 0 && ' · '}
+        <span key={label} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+          {i > 0 && <span className="step-dot">→</span>}
           {i + 1 === step ? (
-            <strong>
-              {i + 1} {label}
-            </strong>
+            <span className="step-now">
+              {i + 1} · {label}
+            </span>
           ) : (
-            <>
-              {i + 1} {label}
-            </>
+            <span>
+              {i + 1} · {label}
+            </span>
           )}
         </span>
       ))}
-    </p>
+    </div>
   );
 }
 
@@ -278,7 +278,8 @@ export default function SubmitPage() {
   if (done) {
     return (
       <div>
-        <h1 className="page-title">Report a venue</h1>
+        <p className="eyebrow">Log a report</p>
+        <h1 className="page-title">Report logged.</h1>
         <div className="form-success">
           <h2>Thanks — your report is pending moderation.</h2>
           <p>It will appear in the rankings once approved. One more while you&apos;re at it?</p>
@@ -297,10 +298,11 @@ export default function SubmitPage() {
 
   return (
     <div>
-      <h1 className="page-title">Report a venue</h1>
+      <p className="eyebrow">Log a report</p>
+      <h1 className="page-title">Caught one in the wild?</h1>
       <p className="page-sub">
-        Facts only: what the tip screen showed, how it was calculated, any fees. Takes 60
-        seconds. No account needed.
+        Snap the receipt, check our redaction, log the facts. Takes 60 seconds. No account
+        needed — and nothing publishes until you confirm the redacted version.
       </p>
       <Stepper step={step} />
 
@@ -394,22 +396,22 @@ export default function SubmitPage() {
                 </div>
               ) : (
                 <>
-                  <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                    <div style={{ flex: '1 1 200px' }}>
-                      <p className="field-label">Original (only you see this)</p>
+                  <div className="photo-compare">
+                    <div>
+                      <span className="photo-tag">Only you see this</span>
+                      <p className="field-label">Original</p>
                       <img
                         src={`/api/evidence/${it.id}/original`}
                         alt={`${KIND_LABEL[it.type]} original`}
-                        style={{ width: '100%', borderRadius: 6 }}
                       />
                     </div>
-                    <div style={{ flex: '1 1 200px' }}>
-                      <p className="field-label">Redacted (this is what publishes)</p>
+                    <div>
+                      <span className="photo-tag">This is what publishes</span>
+                      <p className="field-label">Redacted</p>
                       {it.redactedUrl ? (
                         <img
                           src={it.redactedUrl}
                           alt={`${KIND_LABEL[it.type]} redacted`}
-                          style={{ width: '100%', borderRadius: 6 }}
                         />
                       ) : (
                         <p className="hint">

@@ -84,9 +84,9 @@ function ScoreBlock({ detail }: { detail: VenueDetail }) {
   if (!score) {
     return (
       <div className="detail-section">
-        <h2>Truth score</h2>
+        <h2>Why this score</h2>
         <div className="empty-state" style={{ padding: '20px 16px' }}>
-          Awaiting evidence
+          Awaiting evidence — nothing scored yet.
         </div>
         <p className="score-explainer">
           No verified evidence yet — scores only reflect photo-verified facts. Once a
@@ -98,37 +98,35 @@ function ScoreBlock({ detail }: { detail: VenueDetail }) {
   }
   return (
     <div className="detail-section">
-      <h2>Truth score</h2>
-      <div className="venue-top">
-        <div>
-          <div className="score-num" style={{ fontSize: 44, fontWeight: 800, lineHeight: 1 }}>
-            {score.score}
-            <span style={{ fontSize: 20, color: 'var(--muted)' }}> / 100</span>
-          </div>
-          <p className="score-explainer" style={{ marginTop: 8 }}>
-            Based on {score.evidenceCount} verified photo
-            {score.evidenceCount === 1 ? '' : 's'}. Higher = more aggressive tipping
-            practices.
-          </p>
-        </div>
-        <div className="score-badge">
-          <div className="score-num">{score.score}</div>
-          <div className="score-label">truth score</div>
-        </div>
-      </div>
-      <h3 style={{ fontSize: 15, margin: '16px 0 8px' }}>What raised it</h3>
+      <h2>Why this score</h2>
+      <p className="score-explainer" style={{ marginTop: 0 }}>
+        Based on {score.evidenceCount} verified photo
+        {score.evidenceCount === 1 ? '' : 's'}. Higher = more aggressive tipping practices.
+        Only photo-verified facts count.
+      </p>
       {score.components.map((c: ScoreComponent) => (
-        <div key={c.key} className="report-item">
-          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-            <strong>{c.label}</strong>
-            <span className="fact-chip">+{c.points}</span>
-          </div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
-            {c.evidenceIds.map((id) => {
-              const e = byId.get(id);
-              return e ? <EvidenceThumb key={id} evidence={e} /> : null;
-            })}
-          </div>
+        <div key={c.key} className="score-bar-row">
+          <strong>{c.label}</strong>
+          <span className="pts">+{c.points}</span>
+          <span className="bar" aria-hidden="true">
+            <i style={{ width: `${Math.min(100, (c.points / 25) * 100)}%` }} />
+          </span>
+          {c.evidenceIds.length > 0 && (
+            <span
+              style={{
+                gridColumn: '1 / -1',
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: 8,
+                marginTop: 4,
+              }}
+            >
+              {c.evidenceIds.map((id) => {
+                const e = byId.get(id);
+                return e ? <EvidenceThumb key={id} evidence={e} /> : null;
+              })}
+            </span>
+          )}
         </div>
       ))}
       <p className="score-explainer">
@@ -157,19 +155,44 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
         ← All venues
       </a>
 
+      <div className="detail-hero">
+        <div className="detail-top">
+          <div>
+            <p className="eyebrow" style={{ color: '#4b441b' }}>
+              Venue file
+            </p>
+            <h1 className="page-title">{venue.name}</h1>
+            <p className="page-sub">
+              {venue.city}
+              {venue.area ? ' · ' + venue.area : ''} · {detail.approvedCount} approved
+              report
+              {detail.approvedCount === 1 ? '' : 's'} · updated {fmtDate(detail.lastUpdated)}
+            </p>
+          </div>
+          {detail.score ? (
+            <div className="detail-score">
+              {detail.score.score}
+              <small>truth score / 100</small>
+            </div>
+          ) : (
+            <div
+              className="detail-score"
+              style={{ fontSize: '1.4rem', letterSpacing: 0, lineHeight: 1.2 }}
+            >
+              Awaiting
+              <br />
+              evidence
+            </div>
+          )}
+        </div>
+      </div>
+
       {venue.isSeed && (
-        <div className="form-error" style={{ marginTop: 12 }}>
+        <div className="seed-banner">
           <strong>Fictional seed data.</strong> This venue and its reports are made-up demo
           data for development — not real reports.
         </div>
       )}
-
-      <h1 className="page-title">{venue.name}</h1>
-      <p className="page-sub">
-        {venue.city}
-        {venue.area ? ' · ' + venue.area : ''} · {detail.approvedCount} approved report
-        {detail.approvedCount === 1 ? '' : 's'} · updated {fmtDate(detail.lastUpdated)}
-      </p>
 
       <ScoreBlock detail={detail} />
 
