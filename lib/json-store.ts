@@ -7,7 +7,9 @@
 import fs from 'fs';
 import path from 'path';
 import type {
+  BulkUpsertResult,
   Evidence,
+  FindOrCreateVenueOpts,
   ModerationAction,
   NewEvidence,
   NewReport,
@@ -16,6 +18,7 @@ import type {
   ReportFilter,
   Storage,
   Venue,
+  VenueUpsert,
 } from './storage.ts';
 import { hashKey, newId, venueSlug } from './storage.ts';
 
@@ -77,6 +80,11 @@ export class JsonStore implements Storage {
               name: r.venueName,
               city: r.city,
               area: r.area,
+              address: '',
+              lat: null,
+              lng: null,
+              category: '',
+              source: 'manual',
               isSeed: false,
               createdAt: r.createdAt,
             });
@@ -114,19 +122,80 @@ export class JsonStore implements Storage {
     return this.read().venues.find((v) => v.id === id) ?? null;
   }
 
-  async findOrCreateVenue(name: string, city: string, area = '', opts: { isSeed?: boolean } = {}): Promise<Venue> {
+  async findOrCreateVenue(name: string, city: string, area = '', opts: FindOrCreateVenueOpts = {}): Promise<Venue> {
     const db = this.read();
-    const id = venueSlug(name, city);
+    const id = venueSlug(name, city, opts.disambiguator);
     let v = db.venues.find((x) => x.id === id);
     if (!v) {
-      v = { id, name: name.trim(), city: city.trim(), area: area.trim(), isSeed: opts.isSeed ?? false, createdAt: new Date().toISOString() };
+      v = {
+        id,
+        name: name.trim(),
+        city: city.trim(),
+        area: area.trim(),
+        address: (opts.address ?? '').trim(),
+        lat: opts.lat ?? null,
+        lng: opts.lng ?? null,
+        category: (opts.category ?? '').trim(),
+        source: opts.source ?? 'manual',
+        isSeed: opts.isSeed ?? false,
+        createdAt: new Date().toISOString(),
+      };
       db.venues.push(v);
       this.write(db);
-    } else if (opts.isSeed && !v.isSeed) {
-      v.isSeed = true;
-      this.write(db);
+    } else {
+      // Conflict: patch only fields the caller explicitly provided, so a
+      // plain user submission never wipes import-enriched data.
+      let touched = false;
+      if (opts.isSeed && !v.isSeed) { v.isSeed = true; touched = true; }
+      if (opts.address !== undefined && opts.address.trim() && opts.address.trim() !== v.address) { v.address = opts.address.trim(); touched = true; }
+      if (opts.lat !== undefined && opts.lat !== null && v.lat === null) { v.lat = opts.lat; touched = true; }
+      if (opts.lng !== undefined && opts.lng !== null && v.lng === null) { v.lng = opts.lng; touched = true; }
+      if (opts.category !== undefined && opts.category.trim() && !v.category) { v.category = opts.category.trim(); touched = true; }
+      if (touched) this.write(db);
     }
     return v;
+  }
+
+  async bulkUpsertVenues(items: VenueUpsert[]): Promise<BulkUpsertResult> {
+    const db = this.read();
+    const byId = new Map(db.venues.map((v) => [v.id, v]));
+    let created = 0;
+    let updated = 0;
+    for (const it of items) {
+      const name = it.name.trim();
+      const city = it.city.trim();
+      if (!name || !city) continue;
+      const id = venueSlug(name, city, it.disambiguator);
+      const existing = byId.get(id);
+      if (existing) {
+        const address = (it.address ?? '').trim();
+        if (address && address !== existing.address) existing.address = address;
+        if (it.lat != null && existing.lat === null) existing.lat = it.lat;
+        if (it.lng != null && existing.lng === null) existing.lng = it.lng;
+        const category = (it.category ?? '').trim();
+        if (category && !existing.category) existing.category = category;
+        if (it.source === 'osm' && existing.source !== 'osm') existing.source = 'osm';
+        updated++;
+      } else {
+        byId.set(id, {
+          id,
+          name,
+          city,
+          area: (it.area ?? '').trim(),
+          address: (it.address ?? '').trim(),
+          lat: it.lat ?? null,
+          lng: it.lng ?? null,
+          category: (it.category ?? '').trim(),
+          source: it.source ?? 'manual',
+          isSeed: false,
+          createdAt: new Date().toISOString(),
+        });
+        created++;
+      }
+    }
+    db.venues = [...byId.values()];
+    this.write(db);
+    return { created, updated, total: db.venues.length };
   }
 
   async listReports(filter: ReportFilter = {}): Promise<Report[]> {

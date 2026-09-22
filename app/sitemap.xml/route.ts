@@ -9,11 +9,17 @@ export async function GET(req: NextRequest) {
 
   const store = getStorage();
   const venues = await store.listVenues();
+  // Only venues with at least one approved report get a sitemap entry —
+  // listing shells (no reports yet) are reachable via search/type-ahead.
+  const approved = await store.listReports({ status: 'approved', includeSeeds: true });
+  const withReports = new Set(approved.map((r) => r.venueId));
 
   const urls = [
     { loc: origin + '/', priority: '1.0' },
     { loc: origin + '/submit', priority: '0.8' },
-    ...venues.map((v) => ({ loc: origin + '/venue/' + v.id, priority: '0.7' })),
+    ...venues
+      .filter((v) => withReports.has(v.id))
+      .map((v) => ({ loc: origin + '/venue/' + v.id, priority: '0.7' })),
   ];
 
   const xml =

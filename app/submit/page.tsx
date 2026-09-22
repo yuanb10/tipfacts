@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReceiptParsed } from '@/lib/storage';
+import { bestVenueMatch } from '@/lib/venue-match';
 
 /**
  * Multi-step, receipt-first submission flow (Sprint 1):
@@ -116,6 +117,319 @@ function Stepper({ step }: { step: Step }) {
           )}
         </span>
       ))}
+    </div>
+  );
+}
+
+/** Lightweight venue shape returned by GET /api/venues/search. */
+interface VenueHit {
+  id: string;
+  name: string;
+  city: string;
+  area: string;
+  address: string;
+  lat: number | null;
+  lng: number | null;
+  category: string;
+  source: 'osm' | 'manual';
+  distanceMeters?: number;
+}
+
+/**
+ * Venue picker for step 3: users never type a full venue name from scratch.
+ *   - OCR merchant pre-fill: fuzzy-matches the receipt's merchant against
+ *     known venues and proposes the best hit for confirmation.
+ *   - Type-ahead: debounced search over all listings (shells included).
+ *   - Nearby: optional geolocation → venues within ~800m.
+ *   - Manual fallback: type a new name; it becomes a pending venue.
+ * Selecting a listing posts `venueId`; the manual path posts venueName+city.
+ */
+function VenuePicker({ merchants }: { merchants: string[] }) {
+  const [selected, setSelected] = useState<VenueHit | null>(null);
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<VenueHit[]>([]);
+  const [open, setOpen] = useState(false);
+  const [notice, setNotice] = useState<{ kind: 'detected' | 'new'; text: string } | null>(null);
+  const [nearby, setNearby] = useState<VenueHit[] | null>(null);
+  const [locating, setLocating] = useState(false);
+  const [locError, setLocError] = useState('');
+  const [manualName, setManualName] = useState('');
+  const didPrefill = useRef(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  // OCR merchant pre-fill — once, on mount.
+  useEffect(() => {
+    if (didPrefill.current) return;
+    didPrefill.current = true;
+    const merchant = merchants.map((m) => m.trim()).find(Boolean);
+    if (!merchant) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/venues/search?q=' + encodeURIComponent(merchant));
+        const data = await res.json();
+        if (cancelled) return;
+        const venues: VenueHit[] = data.ok ? (data.venues ?? []) : [];
+        const best = bestVenueMatch(merchant, venues);
+        if (best) {
+          setSelected(best.venue);
+          setNotice({
+            kind: 'detected',
+            text: `We detected ${best.venue.name} from your receipt — is this right?`,
+          });
+        } else {
+          setManualName(merchant);
+          setNotice({
+            kind: 'new',
+            text: `We couldn't find "${merchant}" in our listings — we'll add it as a new venue when you submit (pending moderation).`,
+          });
+        }
+      } catch {
+        if (!cancelled) setManualName(merchant);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // merchants is fixed for this mount (step 3 renders once per visit).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Debounced type-ahead.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setResults([]);
+      setOpen(false);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/venues/search?q=' + encodeURIComponent(q));
+        const data = await res.json();
+        if (data.ok) {
+          setResults(data.venues ?? []);
+          setOpen(true);
+        }
+      } catch {
+        // keep previous results on transient errors
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query]);
+
+  // Close the dropdown on outside click.
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  function choose(v: VenueHit) {
+    setSelected(v);
+    setQuery('');
+    setResults([]);
+    setOpen(false);
+    setNearby(null);
+    setNotice(null);
+  }
+
+  function change() {
+    setSelected(null);
+    setManualName('');
+    setNotice(null);
+  }
+
+  function useMyLocation() {
+    if (!('geolocation' in navigator)) {
+      setLocError('Geolocation is not available in this browser.');
+      return;
+    }
+    setLocating(true);
+    setLocError('');
+    setNearby(null);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try {
+          const res = await fetch(
+            `/api/venues/search?lat=${pos.coords.latitude}&lng=${pos.coords.longitude}&radius=800`,
+          );
+          const data = await res.json();
+          if (data.ok) setNearby(data.venues ?? []);
+        } catch {
+          setLocError('Could not load nearby venues — try searching by name.');
+        } finally {
+          setLocating(false);
+        }
+      },
+      () => {
+        setLocError('Location access was denied — you can still search by name.');
+        setLocating(false);
+      },
+      { timeout: 10000 },
+    );
+  }
+
+  const sub = (v: VenueHit) =>
+    [v.address, v.area || v.city, v.category].filter(Boolean).join(' · ');
+
+  return (
+    <div>
+      <div className="field">
+        <span className="field-label">
+          Venue <span className="required-mark">*</span>
+        </span>
+        {notice?.kind === 'detected' && (
+          <div className="form-success" style={{ marginBottom: 8 }}>
+            <p style={{ margin: 0 }}>{notice.text}</p>
+          </div>
+        )}
+        {notice?.kind === 'new' && <p className="hint">{notice.text}</p>}
+
+        {selected ? (
+          <div>
+            <input type="hidden" name="venueId" value={selected.id} />
+            <div className="venue-chip">
+              <div>
+                <strong>{selected.name}</strong>
+                <div className="hint" style={{ margin: 0 }}>
+                  {sub(selected)}
+                </div>
+              </div>
+              <button type="button" className="btn btn-secondary" onClick={change}>
+                Change
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="venue-picker" ref={wrapRef}>
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              onFocus={() => {
+                if (results.length) setOpen(true);
+              }}
+              placeholder="Start typing a venue name…"
+              maxLength={80}
+              autoComplete="off"
+              aria-label="Search venues"
+            />
+            {open && results.length > 0 && (
+              <ul className="venue-results" role="listbox" aria-label="Matching venues">
+                {results.map((v) => (
+                  <li key={v.id}>
+                    <button type="button" role="option" aria-selected="false" onClick={() => choose(v)}>
+                      <span className="venue-result-name">{v.name}</span>
+                      <span className="venue-result-sub">{sub(v)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {open && query.trim().length >= 2 && results.length === 0 && (
+              <p className="hint">
+                No matches — keep typing, or fill in the name below and we&apos;ll add it.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+
+      {!selected && (
+        <>
+          <div className="field">
+            <button
+              type="button"
+              className="btn btn-secondary"
+              onClick={useMyLocation}
+              disabled={locating}
+            >
+              {locating ? 'Locating…' : 'Use my location'}
+            </button>
+            {locError && (
+              <p className="form-error" style={{ marginTop: 8 }}>
+                {locError}
+              </p>
+            )}
+            {nearby && (
+              <div style={{ marginTop: 8 }}>
+                {nearby.length === 0 ? (
+                  <p className="hint">
+                    No listed venues within 800m — search by name or add it below.
+                  </p>
+                ) : (
+                  <>
+                    <span className="field-label">Nearby</span>
+                    <div className="venue-nearby">
+                      {nearby.map((v) => (
+                        <button
+                          key={v.id}
+                          type="button"
+                          className="venue-nearby-btn"
+                          onClick={() => choose(v)}
+                        >
+                          <span className="venue-result-name">{v.name}</span>
+                          <span className="venue-result-sub">
+                            {v.distanceMeters != null ? `${v.distanceMeters}m` : ''}
+                            {v.distanceMeters != null && sub(v) ? ' · ' : ''}
+                            {sub(v)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="venueName">
+              Venue name <span className="required-mark">*</span>
+            </label>
+            <input
+              type="text"
+              id="venueName"
+              name="venueName"
+              required
+              maxLength={120}
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              placeholder="e.g. Demo Diner"
+            />
+            <p className="hint">
+              Can&apos;t find it above? Type the full name — we&apos;ll add it as a new venue
+              (pending moderation).
+            </p>
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="city">
+              City <span className="required-mark">*</span>
+            </label>
+            <input
+              type="text"
+              id="city"
+              name="city"
+              required
+              maxLength={80}
+              defaultValue="Seattle"
+            />
+            <p className="hint">Starting in Seattle — other cities welcome.</p>
+          </div>
+        </>
+      )}
+
+      <div className="field">
+        <label className="field-label" htmlFor="area">
+          Neighborhood / area
+        </label>
+        <input type="text" id="area" name="area" maxLength={80} />
+        <p className="hint">Optional — leave blank and we&apos;ll fill it in.</p>
+      </div>
     </div>
   );
 }
@@ -589,28 +903,7 @@ export default function SubmitPage() {
             Objective facts only — they feed the score.
           </p>
 
-          <div className="field">
-            <label className="field-label" htmlFor="venueName">
-              Venue name <span className="required-mark">*</span>
-            </label>
-            <input type="text" id="venueName" name="venueName" required maxLength={120} />
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="city">
-              City <span className="required-mark">*</span>
-            </label>
-            <input type="text" id="city" name="city" required maxLength={80} />
-            <p className="hint">Starting in Seattle — other cities welcome.</p>
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="area">
-              Neighborhood / area
-            </label>
-            <input type="text" id="area" name="area" maxLength={80} />
-            <p className="hint">Optional — leave blank and we&apos;ll fill it in.</p>
-          </div>
+          <VenuePicker merchants={items.map((it) => it.draft.merchant)} />
 
           <div className="field">
             <span className="field-label">

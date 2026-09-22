@@ -74,12 +74,22 @@ export interface Report {
   createdAt: string; // ISO
 }
 
-/** Canonical venue identity. Stable slug id: slugify(name) + '--' + slugify(city). */
+/** Canonical venue identity. Stable slug id: slugify(name) + '--' + slugify(city),
+ *  with an optional '--' + slugify(disambiguator) suffix when one name maps to
+ *  several real locations (e.g. chain branches at different addresses).
+ *  `source` marks bulk-imported public listings ('osm') vs human-created ones.
+ *  Venues with no approved reports are listing shells: they appear in
+ *  type-ahead/nearby but not in the public leaderboard until real data lands. */
 export interface Venue {
   id: string;
   name: string;
   city: string;
   area: string;
+  address: string; // street address, e.g. "123 3rd Ave" — '' when unknown
+  lat: number | null;
+  lng: number | null;
+  category: string; // e.g. "cafe", "restaurant" — '' when unknown
+  source: 'osm' | 'manual';
   isSeed: boolean;
   createdAt: string; // ISO
 }
@@ -131,11 +141,44 @@ export interface RateLimitResult {
   remaining: number;
 }
 
+export interface FindOrCreateVenueOpts {
+  isSeed?: boolean;
+  address?: string;
+  lat?: number | null;
+  lng?: number | null;
+  category?: string;
+  source?: 'osm' | 'manual';
+  /** Extra slug segment when one (name, city) maps to several locations. */
+  disambiguator?: string;
+}
+
+/** One venue shell for bulk import (scripts/import-osm.ts). */
+export interface VenueUpsert {
+  name: string;
+  city: string;
+  area?: string;
+  address?: string;
+  lat?: number | null;
+  lng?: number | null;
+  category?: string;
+  source?: 'osm' | 'manual';
+  disambiguator?: string;
+}
+
+export interface BulkUpsertResult {
+  created: number;
+  updated: number; // existing rows enriched / already present
+  total: number; // venues in store after the upsert
+}
+
 export interface Storage {
   // venues
   listVenues(): Promise<Venue[]>;
   getVenue(id: string): Promise<Venue | null>;
-  findOrCreateVenue(name: string, city: string, area?: string, opts?: { isSeed?: boolean }): Promise<Venue>;
+  findOrCreateVenue(name: string, city: string, area?: string, opts?: FindOrCreateVenueOpts): Promise<Venue>;
+  /** Bulk upsert for imports: single read/write on the JSON backend, one
+   *  transaction on Postgres. Re-running with the same input is a no-op. */
+  bulkUpsertVenues(items: VenueUpsert[]): Promise<BulkUpsertResult>;
   // reports
   listReports(filter?: ReportFilter): Promise<Report[]>;
   getReport(id: string): Promise<Report | null>;
@@ -169,8 +212,10 @@ export function slugify(s: string): string {
     .replace(/^-+|-+$/g, '');
 }
 
-export function venueSlug(name: string, city: string): string {
-  return slugify(name) + '--' + slugify(city);
+export function venueSlug(name: string, city: string, disambiguator?: string): string {
+  const base = slugify(name) + '--' + slugify(city);
+  const d = disambiguator ? slugify(disambiguator) : '';
+  return d ? `${base}--${d}` : base;
 }
 
 export function newId(): string {

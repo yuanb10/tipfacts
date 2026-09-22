@@ -198,8 +198,36 @@ function findMoneyLine(lines: string[], re: RegExp): number | null {
 }
 
 /**
+ * Best-effort merchant guess: the venue name usually sits at the very top of
+ * a receipt. Conservative by design — returns null rather than a dubious
+ * guess. The result is only ever a *proposal*: the submit flow fuzzy-matches
+ * it against known venues and asks the uploader to confirm.
+ *
+ * Known limitation: receipts that print the *customer* name first (e.g.
+ * "Order for Bo") can be misread as the merchant. The confirmation step is
+ * the backstop.
+ */
+export function guessMerchant(lines: string[]): string | null {
+  const SKIP = /\b(receipt|invoice|order\s*(#|number|no\.?)?|guest\s*check|table|server|cashier|clerk|transaction|auth(orization)?|balance|change|subtotal|total|tax|tip|gratuity|payment|paid|thank you|thanks|welcome)\b/i;
+  for (const raw of lines.slice(0, 6)) {
+    const line = raw.trim();
+    if (line.length < 2 || line.length > 60) continue;
+    if (!/[a-zA-Z]/.test(line)) continue; // must contain letters
+    if (/\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/.test(line)) continue; // phone number
+    if (/https?:|www\.|\.(com|net|org|io)\b/i.test(line)) continue; // URL
+    if (/\$\s*\d/.test(line) || /\d+\s*\.\s*\d{2}/.test(line)) continue; // money line
+    if (SKIP.test(line)) continue;
+    if (/\border\s+for\b|\bcustomer\b|\bguest\b/i.test(line)) continue; // customer name, not venue
+    const cleaned = line.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, '').trim();
+    if (cleaned.length >= 2) return cleaned.slice(0, 60);
+  }
+  return null;
+}
+
+/**
  * Pull structured values out of OCR words. Line-based regexes; every field
- * is null when not found — never guessed.
+ * is null when not found — never guessed (merchant is a *proposal*, see
+ * guessMerchant, and is always confirmed by the uploader).
  */
 export function extractParsedValues(words: OcrWord[], rawText: string): ReceiptParsed {
   const lines = linesFromWords(words);
@@ -239,7 +267,7 @@ export function extractParsedValues(words: OcrWord[], rawText: string): ReceiptP
   }
 
   return {
-    merchant: null,
+    merchant: guessMerchant(lines),
     purchasedAt: null,
     subtotal,
     tax,

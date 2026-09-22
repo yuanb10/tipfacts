@@ -4,7 +4,9 @@
  */
 import { Pool } from 'pg';
 import type {
+  BulkUpsertResult,
   Evidence,
+  FindOrCreateVenueOpts,
   ModerationAction,
   NewEvidence,
   NewReport,
@@ -13,6 +15,7 @@ import type {
   ReportFilter,
   Storage,
   Venue,
+  VenueUpsert,
 } from './storage.ts';
 import { hashKey, newId, venueSlug } from './storage.ts';
 
@@ -27,6 +30,11 @@ function toVenue(row: any): Venue {
     name: row.name,
     city: row.city,
     area: row.area ?? '',
+    address: row.address ?? '',
+    lat: row.lat == null ? null : Number(row.lat),
+    lng: row.lng == null ? null : Number(row.lng),
+    category: row.category ?? '',
+    source: row.source === 'osm' ? 'osm' : 'manual',
     isSeed: !!row.is_seed,
     createdAt: iso(row.created_at),
   };
@@ -92,16 +100,94 @@ export class PostgresStore implements Storage {
     return rows.length ? toVenue(rows[0]) : null;
   }
 
-  async findOrCreateVenue(name: string, city: string, area = '', opts: { isSeed?: boolean } = {}): Promise<Venue> {
-    const id = venueSlug(name, city);
+  async findOrCreateVenue(name: string, city: string, area = '', opts: FindOrCreateVenueOpts = {}): Promise<Venue> {
+    const id = venueSlug(name, city, opts.disambiguator);
+    const existing = await this.getVenue(id);
+    if (existing) {
+      // Patch only explicitly provided enrichment fields; never wipe.
+      const sets: string[] = [];
+      const params: unknown[] = [];
+      if (opts.isSeed && !existing.isSeed) { params.push(true); sets.push(`is_seed = $${params.length}`); }
+      if (opts.address !== undefined && opts.address.trim()) { params.push(opts.address.trim()); sets.push(`address = $${params.length}`); }
+      if (opts.lat !== undefined && opts.lat !== null && existing.lat === null) { params.push(opts.lat); sets.push(`lat = $${params.length}`); }
+      if (opts.lng !== undefined && opts.lng !== null && existing.lng === null) { params.push(opts.lng); sets.push(`lng = $${params.length}`); }
+      if (opts.category !== undefined && opts.category.trim() && !existing.category) { params.push(opts.category.trim()); sets.push(`category = $${params.length}`); }
+      if (sets.length) {
+        params.push(id);
+        const { rows } = await this.pool.query(
+          `UPDATE venues SET ${sets.join(', ')} WHERE id = $${params.length} RETURNING *`,
+          params,
+        );
+        return toVenue(rows[0]);
+      }
+      return existing;
+    }
     const { rows } = await this.pool.query(
-      `INSERT INTO venues (id, name, city, area, is_seed)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO UPDATE SET area = EXCLUDED.area
+      `INSERT INTO venues (id, name, city, area, address, lat, lng, category, source, is_seed)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+       ON CONFLICT (id) DO NOTHING
        RETURNING *`,
-      [id, name.trim(), city.trim(), area.trim(), opts.isSeed ?? false],
+      [
+        id,
+        name.trim(),
+        city.trim(),
+        area.trim(),
+        (opts.address ?? '').trim(),
+        opts.lat ?? null,
+        opts.lng ?? null,
+        (opts.category ?? '').trim(),
+        opts.source ?? 'manual',
+        opts.isSeed ?? false,
+      ],
     );
-    return toVenue(rows[0]);
+    if (rows.length) return toVenue(rows[0]);
+    const v = await this.getVenue(id); // lost a race with a concurrent insert
+    if (!v) throw new Error('venue upsert failed: ' + id);
+    return v;
+  }
+
+  async bulkUpsertVenues(items: VenueUpsert[]): Promise<BulkUpsertResult> {
+    const clean = items
+      .map((it) => ({
+        id: venueSlug(it.name.trim(), it.city.trim(), it.disambiguator),
+        name: it.name.trim(),
+        city: it.city.trim(),
+        area: (it.area ?? '').trim(),
+        address: (it.address ?? '').trim(),
+        lat: it.lat ?? null,
+        lng: it.lng ?? null,
+        category: (it.category ?? '').trim(),
+        source: it.source ?? 'manual' as const,
+      }))
+      .filter((v) => v.name && v.city);
+    if (!clean.length) {
+      const { rows } = await this.pool.query('SELECT COUNT(*)::int AS n FROM venues');
+      return { created: 0, updated: 0, total: rows[0].n };
+    }
+    const before = await this.pool.query('SELECT id FROM venues');
+    const had = new Set<string>(before.rows.map((r: any) => r.id));
+    const cols = ['id', 'name', 'city', 'area', 'address', 'lat', 'lng', 'category', 'source'];
+    const values: unknown[] = [];
+    const tuples = clean.map((v) => {
+      const row = [v.id, v.name, v.city, v.area, v.address, v.lat, v.lng, v.category, v.source];
+      const base = values.length;
+      values.push(...row);
+      return `(${row.map((_, i) => `$${base + i + 1}`).join(',')})`;
+    });
+    await this.pool.query(
+      `INSERT INTO venues (${cols.join(',')}) VALUES ${tuples.join(',')}
+       ON CONFLICT (id) DO UPDATE SET
+         address = CASE WHEN EXCLUDED.address <> '' THEN EXCLUDED.address ELSE venues.address END,
+         lat = COALESCE(venues.lat, EXCLUDED.lat),
+         lng = COALESCE(venues.lng, EXCLUDED.lng),
+         category = CASE WHEN venues.category = '' THEN EXCLUDED.category ELSE venues.category END,
+         source = CASE WHEN EXCLUDED.source = 'osm' THEN 'osm' ELSE venues.source END`,
+      values,
+    );
+    const after = await this.pool.query('SELECT COUNT(*)::int AS n FROM venues');
+    let created = 0;
+    for (const v of clean) if (!had.has(v.id)) created++;
+    return { created, updated: clean.length - created, total: after.rows[0].n };
   }
 
   async listReports(filter: ReportFilter = {}): Promise<Report[]> {

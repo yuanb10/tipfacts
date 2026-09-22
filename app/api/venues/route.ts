@@ -34,6 +34,11 @@ export async function GET(req: NextRequest) {
 
   let cards: VenueCard[] = summarizeVenues(venues, approved, evidenceById);
 
+  // Listing shells (bulk-imported venues with no approved reports yet) stay
+  // out of the public leaderboard — they exist for type-ahead/nearby so new
+  // reports can attach to them, and they surface here once real data lands.
+  cards = cards.filter((c) => c.approvedCount > 0);
+
   // Backed service type is needed for the service filter; computed from the
   // same evidence-backed aggregation used for scoring, falling back to
   // community consensus when no screen evidence backs it yet.

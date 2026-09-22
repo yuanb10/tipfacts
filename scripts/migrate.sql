@@ -3,13 +3,20 @@
 -- Safe to run repeatedly: every statement is IF NOT EXISTS.
 
 CREATE TABLE IF NOT EXISTS venues (
-  id         TEXT PRIMARY KEY,          -- slug: slugify(name) || '--' || slugify(city)
+  id         TEXT PRIMARY KEY,          -- slug: slugify(name) || '--' || slugify(city) [+ '--' || slugify(disambiguator)]
   name       TEXT NOT NULL,
   city       TEXT NOT NULL,
   area       TEXT NOT NULL DEFAULT '',
   is_seed    BOOLEAN NOT NULL DEFAULT FALSE,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Venue-coverage columns (safe to re-run: IF NOT EXISTS).
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS address  TEXT NOT NULL DEFAULT '';
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS lat      DOUBLE PRECISION;
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS lng      DOUBLE PRECISION;
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT '';
+ALTER TABLE venues ADD COLUMN IF NOT EXISTS source   TEXT NOT NULL DEFAULT 'manual';
 
 CREATE TABLE IF NOT EXISTS reports (
   id                 TEXT PRIMARY KEY,

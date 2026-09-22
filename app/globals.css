@@ -1028,6 +1028,87 @@ p {
   margin: 0 0 16px;
 }
 
+/* ---------- Venue picker (submit flow) ---------- */
+.venue-picker {
+  position: relative;
+}
+
+.venue-results {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  box-shadow: 4px 4px 0 var(--ink);
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.venue-results button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.venue-results button:hover,
+.venue-results button:focus-visible {
+  background: var(--yellow-soft);
+}
+
+.venue-result-name {
+  display: block;
+  font-weight: 700;
+}
+
+.venue-result-sub {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
+.venue-chip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 3px 3px 0 var(--ink);
+}
+
+.venue-nearby {
+  display: grid;
+  gap: 8px;
+}
+
+.venue-nearby-btn {
+  text-align: left;
+  background: var(--surface);
+  color: var(--ink);
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.venue-nearby-btn:hover {
+  background: var(--yellow-soft);
+}
+
 /* Review-step photo compare */
 .photo-compare {
   display: flex;

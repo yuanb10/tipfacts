@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getStorage, hashKey } from '@/lib/storage';
-import type { NewReport, ServiceType, TipBase } from '@/lib/storage';
+import type { NewReport, ServiceType, TipBase, Venue } from '@/lib/storage';
 
 const SERVICE_TYPES: ServiceType[] = ['counter', 'table', 'takeout', 'nonfood'];
 const FEE_VALUES = new Set(['service-charge', 'card-surcharge', 'none', 'other']);
@@ -51,11 +51,27 @@ export async function POST(req: NextRequest) {
   const venueName = str('venueName');
   const city = str('city');
   const serviceType = str('serviceType') as ServiceType;
-  if (!venueName || !city) {
-    return NextResponse.json(
-      { ok: false, error: 'Venue name and city are required.' },
-      { status: 400 },
-    );
+
+  // When the submit flow picked an existing listing (type-ahead, OCR
+  // pre-fill, or nearby), the client sends its venueId; the venue's own
+  // name/city win over anything typed. Otherwise fall back to the manual
+  // name + city fields, which create the venue on the fly.
+  const venueIdRaw = str('venueId');
+  let venue: Venue;
+  if (venueIdRaw) {
+    const existing = await storage.getVenue(venueIdRaw);
+    if (!existing) {
+      return NextResponse.json({ ok: false, error: 'Unknown venue.' }, { status: 400 });
+    }
+    venue = existing;
+  } else {
+    if (!venueName || !city) {
+      return NextResponse.json(
+        { ok: false, error: 'Venue name and city are required.' },
+        { status: 400 },
+      );
+    }
+    venue = await storage.findOrCreateVenue(venueName, city, str('area'));
   }
   if (!SERVICE_TYPES.includes(serviceType)) {
     return NextResponse.json({ ok: false, error: 'Invalid service type.' }, { status: 400 });
@@ -101,13 +117,11 @@ export async function POST(req: NextRequest) {
   const tipBaseRaw = str('tipBase');
   const guiltRaw = str('guilt');
 
-  const venue = await storage.findOrCreateVenue(venueName, city, str('area'));
-
   const report = await storage.createReport({
     venueId: venue.id,
-    venueName,
-    city,
-    area: str('area'),
+    venueName: venueIdRaw ? venue.name : venueName,
+    city: venueIdRaw ? venue.city : city,
+    area: venueIdRaw ? venue.area || str('area') : str('area'),
     serviceType,
     screenPresentation: str('screenPresentation'),
     presets: str('presets'),
