@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReceiptParsed } from '@/lib/storage';
 import { bestVenueMatch } from '@/lib/venue-match';
+import RedactionCanvas from '@/components/RedactionCanvas';
 
 /**
  * Multi-step, receipt-first submission flow (Sprint 1):
@@ -442,6 +443,9 @@ export default function SubmitPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState(false);
+  // Opened right after a photo is picked: the user redacts on-device first,
+  // and only the redacted+compressed export is uploaded (never the original).
+  const [editing, setEditing] = useState<{ kind: EvidenceKind; file: File } | null>(null);
 
   const patchItem = (id: string, patch: Partial<EvidenceItem>) =>
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -485,7 +489,8 @@ export default function SubmitPage() {
   function onFile(kind: EvidenceKind, input: HTMLInputElement | null) {
     const file = input?.files?.[0];
     if (input) input.value = '';
-    if (file) void uploadFile(kind, file);
+    // Open the on-device redaction editor instead of uploading the raw file.
+    if (file) setEditing({ kind, file });
   }
 
   function removeItem(id: string) {
@@ -620,14 +625,30 @@ export default function SubmitPage() {
       </p>
       <Stepper step={step} />
 
+      {/* on-device redaction editor: picked photo -> user blacks out PII ->
+          only the redacted+compressed export is uploaded */}
+      {editing && (
+        <RedactionCanvas
+          file={editing.file}
+          kindLabel={KIND_LABEL[editing.kind]}
+          onCancel={() => setEditing(null)}
+          onDone={(redacted) => {
+            const kind = editing.kind;
+            setEditing(null);
+            void uploadFile(kind, redacted);
+          }}
+        />
+      )}
+
       {/* ------------------------------------------------- step 1: evidence */}
       {step === 1 && (
         <div className="form-card">
           {step1Error && <div className="form-error">{step1Error}</div>}
 
           <p className="hint" style={{ marginTop: 0 }}>
-            Photos go through redaction review in step 2 — nothing publishes until you confirm
-            the redacted version. Please no staff faces.
+            You&apos;ll black out private details yourself right after picking a photo —
+            the original never leaves your device. Then step 2 reviews the redacted
+            version — nothing publishes until you confirm it. Please no staff faces.
           </p>
 
           {(['receipt', 'screen'] as EvidenceKind[]).map((kind) => (
