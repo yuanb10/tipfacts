@@ -11,6 +11,7 @@
     "@types/node": "latest",
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "osm-pbf-parser": "^2.3.0",
     "typescript": "latest"
   },
   "name": "tipfacts",

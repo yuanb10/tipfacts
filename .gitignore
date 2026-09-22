@@ -3,6 +3,7 @@ node_modules/
 *.tsbuildinfo
 data/db.json
 data/uploads-private/
+data/*.osm.pbf
 public/uploads/*
 !public/uploads/.gitkeep
 .env

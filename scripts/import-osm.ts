@@ -4,6 +4,9 @@
 // ids are deterministic (name + city + address/coords), and bulkUpsertVenues
 // only fills in missing fields on conflict.
 //
+// NOTE: the Overpass public API has been chronically overloaded since early
+// 2026 (see scripts/import-geofabrik.ts for the local-extract alternative).
+//
 // Usage:
 //   node scripts/import-osm.ts            # full import (JSON store or Postgres)
 //   node scripts/import-osm.ts --dry-run  # fetch + normalize, print counts, no writes
@@ -12,7 +15,12 @@
 // Shells have no approved reports, so they stay out of the public leaderboard
 // and sitemap; they exist so the submit flow's type-ahead / OCR pre-fill /
 // nearby picker can attach reports to them without anyone typing a full name.
-import { getStorage, normalize } from '../lib/storage.ts';
+import {
+  AMENITIES,
+  buildVenueShell,
+  dedupeVenueShells,
+  importVenueShells,
+} from '../lib/osm-venues.ts';
 import type { VenueUpsert } from '../lib/storage.ts';
 
 const OVERPASS_URLS = [
@@ -21,51 +29,6 @@ const OVERPASS_URLS = [
 ];
 // Seattle metro: Everett-ish south of the Sound to Tacoma, Sound to the Cascades foothills.
 const BBOX = { south: 47.2, west: -122.62, north: 47.85, east: -121.95 };
-const AMENITIES = ['restaurant', 'cafe', 'fast_food', 'bar', 'pub', 'ice_cream', 'food_court'];
-
-const CATEGORY_LABEL: Record<string, string> = {
-  restaurant: 'restaurant',
-  cafe: 'cafe',
-  fast_food: 'fast food',
-  bar: 'bar',
-  pub: 'pub',
-  ice_cream: 'ice cream',
-  food_court: 'food court',
-};
-
-// Rough city assignment when OSM has no addr:city tag: [south, west, north, east, name].
-const CITY_BOXES: [number, number, number, number, string][] = [
-  [47.49, -122.46, 47.73, -122.2, 'Seattle'],
-  [47.58, -122.2, 47.65, -122.08, 'Bellevue'],
-  [47.64, -122.16, 47.7, -122.04, 'Redmond'],
-  [47.64, -122.24, 47.7, -122.16, 'Kirkland'],
-  [47.66, -122.2, 47.72, -122.1, 'Kenmore'],
-  [47.72, -122.24, 47.78, -122.16, 'Bothell'],
-  [47.66, -122.06, 47.72, -121.98, 'Woodinville'],
-  [47.58, -122.08, 47.64, -121.98, 'Sammamish'],
-  [47.52, -122.08, 47.58, -122.0, 'Issaquah'],
-  [47.52, -122.22, 47.56, -122.14, 'Newcastle'],
-  [47.44, -122.24, 47.52, -122.12, 'Renton'],
-  [47.36, -122.24, 47.44, -122.12, 'Kent'],
-  [47.42, -122.32, 47.48, -122.24, 'Tukwila'],
-  [47.44, -122.36, 47.5, -122.28, 'SeaTac'],
-  [47.4, -122.36, 47.46, -122.28, 'Burien'],
-  [47.36, -122.36, 47.42, -122.28, 'Des Moines'],
-  [47.28, -122.36, 47.36, -122.28, 'Federal Way'],
-  [47.2, -122.55, 47.32, -122.35, 'Tacoma'],
-  [47.68, -122.42, 47.78, -122.3, 'Shoreline'],
-  [47.76, -122.36, 47.84, -122.28, 'Mountlake Terrace'],
-  [47.76, -122.28, 47.84, -122.2, 'Lynnwood'],
-];
-
-function cityFor(lat: number, lng: number, tagCity: string): string {
-  const t = tagCity.trim();
-  if (t) return t;
-  for (const [s, w, n, e, name] of CITY_BOXES) {
-    if (lat >= s && lat <= n && lng >= w && lng <= e) return name;
-  }
-  return 'Seattle';
-}
 
 function buildQuery(amenity: string): string {
   const bbox = `${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east}`;
@@ -145,41 +108,20 @@ async function fetchOsm(): Promise<OsmElement[]> {
 
 function normalizeElements(elements: OsmElement[]): VenueUpsert[] {
   const out: VenueUpsert[] = [];
-  const seenIds = new Set<string>();
   let skippedNoName = 0;
   for (const el of elements) {
     const tags = el.tags ?? {};
-    const name = (tags.name ?? '').trim();
-    if (!name || name.length > 100) {
+    const lat = el.type === 'node' ? el.lat : el.center?.lat;
+    const lng = el.type === 'node' ? el.lon : el.center?.lon;
+    const shell = buildVenueShell(tags, lat as number, lng as number);
+    if (!shell) {
       skippedNoName++;
       continue;
     }
-    const lat = el.type === 'node' ? el.lat : el.center?.lat;
-    const lng = el.type === 'node' ? el.lon : el.center?.lon;
-    if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
-    const street = [tags['addr:housenumber'], tags['addr:street']].filter(Boolean).join(' ').trim();
-    const city = cityFor(lat as number, lng as number, tags['addr:city'] ?? '');
-    const amenity = (tags.amenity ?? '').toLowerCase();
-    out.push({
-      name,
-      city,
-      area: (tags['addr:suburb'] ?? tags['addr:neighbourhood'] ?? '').trim(),
-      address: street,
-      lat: lat as number,
-      lng: lng as number,
-      category: CATEGORY_LABEL[amenity] ?? amenity,
-      source: 'osm',
-      // Chain branches at different addresses stay distinct; re-runs are stable.
-      disambiguator: street || `${(lat as number).toFixed(5)},${(lng as number).toFixed(5)}`,
-    });
+    out.push(shell);
   }
   // Drop exact duplicates inside the batch itself (node+way double-tagging).
-  const deduped = out.filter((v) => {
-    const key = normalize(v.name) + '|' + normalize(v.city) + '|' + normalize(v.address ?? '');
-    if (seenIds.has(key)) return false;
-    seenIds.add(key);
-    return true;
-  });
+  const deduped = dedupeVenueShells(out);
   console.log(`Skipped ${skippedNoName} elements with no usable name.`);
   return deduped;
 }
@@ -211,32 +153,7 @@ async function main() {
     return;
   }
 
-  const storage = getStorage();
-  // Enrichment pass: an OSM candidate matching an existing manual venue by
-  // normalized (name, city) fills in that venue's missing lat/lng/address
-  // instead of creating a second shell (keeps the 8 seed venues canonical).
-  const existing = await storage.listVenues();
-  const existingByKey = new Map(existing.map((v) => [normalize(v.name) + '|' + normalize(v.city), v]));
-  const toImport: VenueUpsert[] = [];
-  let enriched = 0;
-  for (const v of venues) {
-    const hit = existingByKey.get(normalize(v.name) + '|' + normalize(v.city));
-    if (hit && hit.source === 'manual' && (hit.lat === null || !hit.address)) {
-      await storage.findOrCreateVenue(hit.name, hit.city, hit.area, {
-        lat: v.lat,
-        lng: v.lng,
-        address: v.address,
-        category: v.category,
-      });
-      enriched++;
-    } else {
-      toImport.push(v);
-    }
-  }
-  if (enriched) console.log(`Enriched ${enriched} existing venues with OSM coordinates/address.`);
-
-  const result = await storage.bulkUpsertVenues(toImport);
-  await storage.close();
+  const result = await importVenueShells(venues);
   console.log(
     `Done: ${result.created} new shells, ${result.updated} already present, ` +
       `${result.total} venues total (${backend}).`,
