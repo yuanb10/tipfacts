@@ -8,29 +8,34 @@ export const metadata: Metadata = {
 
 const RULES: { points: string; title: string; body: string }[] = [
   {
+    points: '+30',
+    title: 'Table service, lowest preset above 18%',
+    body: 'Anything above 18% for table service is crazy. (+15 if the lowest preset is 16–18%. At or under 15%? +0 — that’s fair.)',
+  },
+  {
+    points: '+25',
+    title: 'Tip prompt at counter, takeout, or non-food retail',
+    body: 'Services that should never charge a tip get +25 for the prompt alone. Handing you a bag or ringing up socks isn’t table service.',
+  },
+  {
+    points: '+10',
+    title: 'No easy custom-tip / no-tip option',
+    body: 'If the screen makes it hard to pick custom or zero — buried, tiny, or missing — that’s another +10 on top.',
+  },
+  {
     points: '+20',
     title: 'Tip calculated on the post-tax total',
     body: 'A 20% tip on the after-tax total quietly costs more than 20%. If the screen prices the tip off the post-tax number, that’s +20.',
   },
   {
-    points: '+25',
-    title: 'Lowest preset at 30% or more',
-    body: 'When the smallest suggested tip starts at 30%, the screen is doing the deciding for you. (+15 if the lowest preset is 25–29%.)',
+    points: '+10/+5',
+    title: 'Extra fees',
+    body: 'Service charges, card surcharges, “wellness fees” — +10 for the first, +5 for each additional one.',
   },
   {
     points: '+15',
-    title: 'Tip prompt at a counter or takeout window',
-    body: 'Table service tipping makes sense. A tip screen for handing you a bag across a counter is pressure, not gratitude.',
-  },
-  {
-    points: '+15',
-    title: 'Tip prompt at non-food retail',
-    body: 'Buying socks shouldn’t come with a guilt trip. Tip screens outside food service get +15.',
-  },
-  {
-    points: '+10',
-    title: 'Hidden fees or surcharges',
-    body: 'Service charges, card surcharges, “wellness fees” — anything that inflates the bill beyond tax and tip.',
+    title: 'Corroborated guilt tipping',
+    body: 'One person feeling pressured is a story. Two or more independent visitors reporting pressure is a pattern — +15. Always labeled as community-reported, never photo evidence.',
   },
 ];
 
@@ -42,9 +47,9 @@ export default function HowItWorksPage() {
         How the <span className="hl">Squeeze Score</span> works
       </h1>
       <p className="page-sub">
-        Every venue starts at 0. Photo-verified facts add points; the score caps at 100.
-        Higher score = more aggressive tipping practices. Simple, auditable, boring on
-        purpose — the drama is in the data.
+        Every venue starts at 0. Verified facts add points; corroborated community reports
+        add a little too; the score caps at 100. Higher score = more aggressive tipping
+        practices. Simple, auditable, boring on purpose — the drama is in the data.
       </p>
 
       <div className="detail-section">
@@ -74,8 +79,8 @@ export default function HowItWorksPage() {
             <dd>Shown as consensus, never scored</dd>
           </div>
           <div className="fact-row">
-            <dt>How pressured people felt</dt>
-            <dd>Subjective, never scored</dd>
+            <dt>Guilt tipping</dt>
+            <dd>Scored only when 2+ visitors corroborate it — always labeled community-reported</dd>
           </div>
           <div className="fact-row">
             <dt>Receipt amounts people typed</dt>

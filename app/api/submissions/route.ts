@@ -116,6 +116,7 @@ export async function POST(req: NextRequest) {
 
   const tipBaseRaw = str('tipBase');
   const guiltRaw = str('guilt');
+  const easyOptOutRaw = str('easyOptOut');
 
   const report = await storage.createReport({
     venueId: venue.id,
@@ -128,6 +129,7 @@ export async function POST(req: NextRequest) {
     tipBase: (TIP_BASE_VALUES.includes(tipBaseRaw as TipBase) ? tipBaseRaw : '') as NewReport['tipBase'],
     fees,
     guilt: (GUILT_VALUES.has(guiltRaw) ? guiltRaw : 'skip') as NewReport['guilt'],
+    easyOptOut: (GUILT_VALUES.has(easyOptOutRaw) ? easyOptOutRaw : 'skip') as NewReport['easyOptOut'],
     experienceNote: str('experienceNote'),
     notes: str('notes'),
     evidenceIds,

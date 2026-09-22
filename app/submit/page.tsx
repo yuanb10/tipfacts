@@ -989,6 +989,25 @@ export default function SubmitPage() {
 
           <div className="field">
             <span className="field-label">
+              Was it easy to choose a custom tip or no tip? (e.g. a clear custom/zero option,
+              not buried or guilt-tripped)
+            </span>
+            <div className="radio-group">
+              {[
+                ['yes', 'Yes, easy'],
+                ['no', 'No, hard or missing'],
+                ['skip', 'Skip'],
+              ].map(([val, label]) => (
+                <label key={val} className="radio-option">
+                  <input type="radio" name="easyOptOut" value={val} />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+
+          <div className="field">
+            <span className="field-label">
               Did you feel pressured while choosing your tip? (e.g. staff watching you select)
             </span>
             <div className="radio-group">

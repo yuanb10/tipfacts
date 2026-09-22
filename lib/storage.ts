@@ -63,6 +63,7 @@ export interface Report {
   tipBase: TipBase | '';
   fees: string[];
   guilt: 'yes' | 'no' | 'skip';
+  easyOptOut: 'yes' | 'no' | 'skip'; // was it easy to pick custom tip / no tip?
   experienceNote: string; // subjective; shown separately, never scored
   notes: string;
   evidenceIds: string[];
@@ -123,6 +124,7 @@ export interface NewReport {
   tipBase?: TipBase | '';
   fees?: string[];
   guilt?: 'yes' | 'no' | 'skip';
+  easyOptOut?: 'yes' | 'no' | 'skip';
   experienceNote?: string;
   notes?: string;
   evidenceIds?: string[];

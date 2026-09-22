@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS reports (
   tip_base           TEXT NOT NULL DEFAULT '',  -- pre-tax | post-tax | not-sure | ''
   fees               JSONB NOT NULL DEFAULT '[]',
   guilt              TEXT NOT NULL DEFAULT 'skip',  -- yes | no | skip (subjective, never scored)
+  easy_opt_out       TEXT NOT NULL DEFAULT 'skip',  -- yes | no | skip (screen fact)
   experience_note    TEXT NOT NULL DEFAULT '',       -- subjective, never scored
   notes              TEXT NOT NULL DEFAULT '',
   evidence_ids       JSONB NOT NULL DEFAULT '[]',

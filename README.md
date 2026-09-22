@@ -79,19 +79,22 @@ SHA-256 hashes (`reporterHash`, rate-limit keys).
 5. **Moderation** (`POST /api/moderate`, `MOD_SECRET`-gated) approves/rejects with
    an audit trail (`moderation_actions`). Only approved reports are public.
 
-## Squeeze score (evidence-only)
+## Squeeze score (v2 rubric)
 
-Only facts backed by **confirmed, approved evidence** move the score
-(`lib/score.ts`):
+The score is driven by **confirmed, approved evidence** (`lib/score.ts`), plus one
+corroborated community signal:
 
 - Receipt evidence backs: tip base (pre/post-tax) and fees.
-- Tip-screen evidence backs: presets, service type, screen presentation.
-- +20 post-tax · +15 lowest preset ≥25% (+25 if ≥30%) · +15 counter/takeout prompt ·
-  +15 non-food retail prompt · +10 hidden/undeclared surcharge · cap 100.
-- No usable evidence → **"Awaiting evidence"** — never a made-up number.
+- Tip-screen evidence backs: presets, service type, screen presentation, easy custom/no-tip.
+- **Table service:** lowest preset ≤15% → +0 · 16–18% → +15 · >18% → +30.
+- **Counter / takeout / non-food:** any tip prompt → +25 · no easy custom/no-tip option → +10 more.
+- **+20** post-tax tip calculation.
+- **Extra fees:** +10 first fee, +5 each additional fee.
+- **+15 guilt tipping** — only when ≥2 independent approved reports corroborate it;
+  always labeled community-reported, never photo evidence.
+- Cap 100. No usable evidence → **"Awaiting evidence"** — never a made-up number.
 - Unverified community consensus is shown separately, labeled as such.
-- Guilt/pressure answers and experience notes are subjective, displayed apart,
-  and **never scored**.
+- Experience notes are subjective, displayed apart, and never scored.
 
 ## SEO
 

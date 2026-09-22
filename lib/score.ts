@@ -1,13 +1,15 @@
 /**
  * TipFacts Sprint 1 scoring.
  *
- * The Squeeze Score is computed ONLY from photo-verified facts: evidence that the
- * uploader confirmed (userConfirmed === true && redactionStatus === 'confirmed').
- * Evidence-type → fact mapping:
+ * The Squeeze Score is computed from photo-verified facts — evidence that the
+ * uploader confirmed (userConfirmed === true && redactionStatus === 'confirmed') —
+ * plus one community-reported signal:
  *   - tipBase              ← confirmed RECEIPT evidence
  *   - presets / minPreset  ← confirmed SCREEN evidence (report presets string + parsed.presets)
- *   - counter/takeout prompt, nonfood prompt ← confirmed SCREEN evidence
+ *   - counter/takeout/nonfood prompt, easy-opt-out ← confirmed SCREEN evidence
  *   - fees                 ← confirmed RECEIPT evidence (report fees + parsed fee labels)
+ *   - guilt tipping        ← COMMUNITY-REPORTED: only scored when ≥2 independent
+ *                             approved reports say 'yes'; always labeled as such
  * Median *reported* tip % is labeled "reported" and is NEVER part of the score.
  */
 
@@ -22,7 +24,14 @@ import type {
 import { getStorage } from '@/lib/storage';
 
 export interface ScoreComponent {
-  key: 'post-tax' | 'min-preset' | 'counter-takeout-prompt' | 'nonfood-prompt' | 'hidden-fee';
+  key:
+    | 'post-tax'
+    | 'table-preset'
+    | 'counter-takeout-prompt'
+    | 'nonfood-prompt'
+    | 'no-easy-optout'
+    | 'fees'
+    | 'guilt-corroborated';
   points: number;
   label: string;
   evidenceIds: string[];
@@ -99,6 +108,7 @@ export interface BackedFacts {
   presets: number[]; // all backed preset values, for display
   serviceType: ServiceType | '';
   screenPresentation: string;
+  easyOptOut: 'yes' | 'no' | 'skip';
   fees: string[];
   receiptEvidenceIds: string[];
   screenEvidenceIds: string[];
@@ -118,6 +128,7 @@ export function aggregateBackedFacts(
   const presetPool: number[] = [];
   const servicePool: ServiceType[] = [];
   const screenPool: string[] = [];
+  const optOutPool: ('yes' | 'no' | 'skip')[] = [];
   const feePool: string[] = [];
   const receiptEvidenceIds: string[] = [];
   const screenEvidenceIds: string[] = [];
@@ -151,6 +162,7 @@ export function aggregateBackedFacts(
       }
       servicePool.push(r.serviceType);
       if (r.screenPresentation) screenPool.push(r.screenPresentation);
+      if (r.easyOptOut && r.easyOptOut !== 'skip') optOutPool.push(r.easyOptOut);
       presetPool.push(...parsePresets(r.presets));
     }
   }
@@ -163,6 +175,7 @@ export function aggregateBackedFacts(
     presets: [...new Set(presetPool)].sort((a, b) => a - b),
     serviceType: (mode(servicePool) || '') as ServiceType | '',
     screenPresentation: (mode(screenPool) || '') as string,
+    easyOptOut: (mode(optOutPool) || 'skip') as 'yes' | 'no' | 'skip',
     fees: dedupe(feePool.filter((f) => f && f !== 'none')),
     receiptEvidenceIds: dedupe(receiptEvidenceIds),
     screenEvidenceIds: dedupe(screenEvidenceIds),
@@ -171,13 +184,19 @@ export function aggregateBackedFacts(
 }
 
 /**
- * Provisional Squeeze Score, kept exactly as specified:
+ * Squeeze Score v2 (Bo's rubric):
  *   start 0
- *   +20 post-tax calculation
- *   +15 if lowest preset >= 25% (+25 instead if >= 30%)
- *   +15 counter/takeout prompt (serviceType counter|takeout AND screen != 'no-screen')
- *   +15 non-food retail prompt (serviceType nonfood AND screen != 'no-screen')
- *   +10 hidden/undeclared surcharge (fees include service-charge|card-surcharge|other)
+ *   Table service:
+ *     +0  lowest preset <= 15%
+ *     +15 lowest preset 16–18%
+ *     +30 lowest preset > 18%
+ *   Counter / takeout / non-food:
+ *     +25 any tip prompt
+ *     +10 more when there is no easy custom-tip / no-tip option
+ *   +20 tip calculated on the post-tax total
+ *   +10 first extra fee, +5 each additional fee
+ *   +15 guilt tipping, but ONLY when corroborated: ≥2 independent approved
+ *       reports say 'yes' (labeled as community-reported, not photo evidence)
  *   cap 100
  * Returns null ("awaiting evidence") when no evidence-backed component fires.
  */
@@ -196,37 +215,76 @@ export function computeVenueScore(
       evidenceIds: b.receiptEvidenceIds,
     });
   }
-  if (b.minPreset !== null && b.minPreset >= 25) {
-    components.push({
-      key: 'min-preset',
-      points: b.minPreset >= 30 ? 25 : 15,
-      label: `Lowest tip preset is ${b.minPreset}%`,
-      evidenceIds: b.screenEvidenceIds,
-    });
-  }
+
   const promptExists = b.screenPresentation !== 'no-screen';
-  if ((b.serviceType === 'counter' || b.serviceType === 'takeout') && promptExists) {
+  const isTable = b.serviceType === 'table';
+
+  if (isTable && b.minPreset !== null) {
+    if (b.minPreset > 18) {
+      components.push({
+        key: 'table-preset',
+        points: 30,
+        label: `Table service with lowest tip preset above 18% (${b.minPreset}%)`,
+        evidenceIds: b.screenEvidenceIds,
+      });
+    } else if (b.minPreset > 15) {
+      components.push({
+        key: 'table-preset',
+        points: 15,
+        label: `Table service with lowest tip preset ${b.minPreset}% (above 15%)`,
+        evidenceIds: b.screenEvidenceIds,
+      });
+    }
+    // ≤15%: +0 — nothing to add.
+  }
+
+  const isCounterish =
+    b.serviceType === 'counter' || b.serviceType === 'takeout' || b.serviceType === 'nonfood';
+  if (isCounterish && promptExists) {
     components.push({
-      key: 'counter-takeout-prompt',
-      points: 15,
-      label: 'Tip prompt presented at counter / takeout',
+      key: b.serviceType === 'nonfood' ? 'nonfood-prompt' : 'counter-takeout-prompt',
+      points: 25,
+      label:
+        b.serviceType === 'nonfood'
+          ? 'Tip prompt presented at non-food retail'
+          : 'Tip prompt presented at counter / takeout',
       evidenceIds: b.screenEvidenceIds,
     });
+    if (b.easyOptOut === 'no') {
+      components.push({
+        key: 'no-easy-optout',
+        points: 10,
+        label: 'No easy custom-tip / no-tip option on the screen',
+        evidenceIds: b.screenEvidenceIds,
+      });
+    }
   }
-  if (b.serviceType === 'nonfood' && promptExists) {
+
+  const feeKeys = b.fees.filter((f) => BACKING_FEE_KEYS.has(f));
+  if (feeKeys.length > 0) {
+    const points = 10 + 5 * (feeKeys.length - 1);
     components.push({
-      key: 'nonfood-prompt',
-      points: 15,
-      label: 'Tip prompt presented at non-food retail',
-      evidenceIds: b.screenEvidenceIds,
-    });
-  }
-  if (b.fees.some((f) => BACKING_FEE_KEYS.has(f))) {
-    components.push({
-      key: 'hidden-fee',
-      points: 10,
-      label: 'Hidden or undeclared fee / surcharge',
+      key: 'fees',
+      points,
+      label:
+        feeKeys.length === 1
+          ? `Extra fee: ${feeKeys[0]}`
+          : `Extra fees (${feeKeys.length}): ${feeKeys.join(', ')}`,
       evidenceIds: b.receiptEvidenceIds,
+    });
+  }
+
+  // Corroborated guilt: ≥2 independent approved reports say 'yes'.
+  // Independence = distinct reporter identities (report id as fallback).
+  // Community-reported, never photo evidence — labeled as such.
+  const guiltYes = approvedReports.filter((r) => r.guilt === 'yes');
+  const distinctReporters = new Set(guiltYes.map((r) => r.reporterHash || r.id));
+  if (guiltYes.length >= 2 && distinctReporters.size >= 2) {
+    components.push({
+      key: 'guilt-corroborated',
+      points: 15,
+      label: `Guilt tipping reported by ${guiltYes.length} visitors (community-reported)`,
+      evidenceIds: [],
     });
   }
 

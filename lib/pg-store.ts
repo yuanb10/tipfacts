@@ -53,6 +53,7 @@ function toReport(row: any): Report {
     tipBase: row.tip_base ?? '',
     fees: Array.isArray(row.fees) ? row.fees.map(String) : [],
     guilt: row.guilt ?? 'skip',
+    easyOptOut: row.easy_opt_out ?? 'skip',
     experienceNote: row.experience_note ?? '',
     notes: row.notes ?? '',
     evidenceIds: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],
@@ -218,10 +219,10 @@ export class PostgresStore implements Storage {
     const { rows } = await this.pool.query(
       `INSERT INTO reports
          (id, venue_id, venue_name, city, area, service_type, screen_presentation,
-          presets, tip_base, fees, guilt, experience_note, notes, evidence_ids,
+          presets, tip_base, fees, guilt, easy_opt_out, experience_note, notes, evidence_ids,
           reporter_hash, is_seed)
        VALUES
-         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14::jsonb,$15,$16)
+         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15::jsonb,$16,$17)
        RETURNING *`,
       [
         id,
@@ -235,6 +236,7 @@ export class PostgresStore implements Storage {
         input.tipBase ?? '',
         JSON.stringify(input.fees ?? []),
         input.guilt ?? 'skip',
+        input.easyOptOut ?? 'skip',
         input.experienceNote ?? '',
         input.notes ?? '',
         JSON.stringify(input.evidenceIds ?? []),
