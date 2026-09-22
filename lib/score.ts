@@ -1,7 +1,7 @@
 /**
  * TipFacts Sprint 1 scoring.
  *
- * The Truth Score is computed ONLY from photo-verified facts: evidence that the
+ * The Squeeze Score is computed ONLY from photo-verified facts: evidence that the
  * uploader confirmed (userConfirmed === true && redactionStatus === 'confirmed').
  * Evidence-type → fact mapping:
  *   - tipBase              ← confirmed RECEIPT evidence
@@ -171,7 +171,7 @@ export function aggregateBackedFacts(
 }
 
 /**
- * Provisional Truth Score, kept exactly as specified:
+ * Provisional Squeeze Score, kept exactly as specified:
  *   start 0
  *   +20 post-tax calculation
  *   +15 if lowest preset >= 25% (+25 instead if >= 30%)

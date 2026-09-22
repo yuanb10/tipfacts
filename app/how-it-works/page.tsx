@@ -1,9 +1,9 @@
 import type { Metadata } from 'next';
 
 export const metadata: Metadata = {
-  title: 'How the Truth Score works | TipFacts',
+  title: 'How the Squeeze Score works | TipFacts',
   description:
-    'How TipFacts turns photo-verified tipping facts into a Truth Score — the rules, the math, and what never counts.',
+    'How TipFacts turns photo-verified tipping facts into a Squeeze Score — the rules, the math, and what never counts.',
 };
 
 const RULES: { points: string; title: string; body: string }[] = [
@@ -39,7 +39,7 @@ export default function HowItWorksPage() {
     <div>
       <p className="eyebrow">The rulebook</p>
       <h1 className="page-title">
-        How the <span className="hl">Truth Score</span> works
+        How the <span className="hl">Squeeze Score</span> works
       </h1>
       <p className="page-sub">
         Every venue starts at 0. Photo-verified facts add points; the score caps at 100.

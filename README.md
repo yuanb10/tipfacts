@@ -24,7 +24,7 @@ Pages:
 - `/` — ranking: search, filter by city / service type, sort by score / reports / name.
 - `/submit` — receipt-first report flow: 1) upload evidence, 2) review redaction,
   3) the facts. Nothing publishes until moderation approves.
-- `/venue/[id]` — venue detail: evidence-backed Truth Score with "what raised it",
+- `/venue/[id]` — venue detail: evidence-backed Squeeze Score with "what raised it",
   verified vs community-consensus facts, subjective experiences (never scored),
   redacted evidence gallery.
 - `/moderate?key=...` — moderation queue (gated by `MOD_SECRET`, see below).
@@ -79,7 +79,7 @@ SHA-256 hashes (`reporterHash`, rate-limit keys).
 5. **Moderation** (`POST /api/moderate`, `MOD_SECRET`-gated) approves/rejects with
    an audit trail (`moderation_actions`). Only approved reports are public.
 
-## Truth score (evidence-only)
+## Squeeze score (evidence-only)
 
 Only facts backed by **confirmed, approved evidence** move the score
 (`lib/score.ts`):
@@ -124,7 +124,7 @@ Only facts backed by **confirmed, approved evidence** move the score
 We also collect reports via a Google Form into a Google Sheet whose cleaned
 **Facts** tab has these columns:
 
-`Venue | City | Area | Service type | Screen presentation | Presets | Tip base (pre/post) | Fees | Reports | Truth score (0–100) | Verified? | Last updated`
+`Venue | City | Area | Service type | Screen presentation | Presets | Tip base (pre/post) | Fees | Reports | Squeeze score (0–100) | Verified? | Last updated`
 
 How app data maps to those columns (do not touch the Form/Sheet from here):
 
@@ -139,7 +139,7 @@ How app data maps to those columns (do not touch the Form/Sheet from here):
 | Tip base (pre/post) | report `tipBase` (most common value)                    |
 | Fees                | report `fees` (union across reports, minus "none")      |
 | Reports             | report count per venue                                  |
-| Truth score (0–100) | evidence-only score over approved reports (see above)   |
+| Squeeze score (0–100) | evidence-only score over approved reports (see above)   |
 | Verified?           | any confirmed-evidence-backed report → verified         |
 | Last updated        | latest report `createdAt`                               |
 

@@ -48,12 +48,12 @@ export async function generateMetadata({
   }
   const { venue, score, approvedCount, unverifiedCount } = detail;
   const state = score
-    ? `truth score ${score.score}/100`
+    ? `squeeze score ${score.score}/100`
     : approvedCount > 0
       ? 'awaiting verified evidence'
       : 'no reports yet';
   return {
-    title: `${venue.name} tipping facts — presets, fees, truth score | TipFacts`,
+    title: `${venue.name} tipping facts — presets, fees, squeeze score | TipFacts`,
     description: `${venue.name} in ${venue.city}: ${state}. ${approvedCount} approved report${approvedCount === 1 ? '' : 's'}${unverifiedCount ? `, ${unverifiedCount} unverified` : ''}. Objective, photo-verified tipping facts — no opinions.`,
   };
 }
@@ -130,7 +130,7 @@ function ScoreBlock({ detail }: { detail: VenueDetail }) {
         </div>
       ))}
       <p className="score-explainer">
-        Truth score (provisional): starts at 0. +20 post-tax calculation. +15 if the lowest
+        Squeeze score (provisional): starts at 0. +20 post-tax calculation. +15 if the lowest
         preset is ≥25% (+25 if ≥30%). +15 for counter/takeout tip prompts. +15 for
         non-food retail tip prompts. +10 for hidden fees or surcharges. Capped at 100. Only
         photo-verified facts count.
@@ -172,7 +172,7 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
           {detail.score ? (
             <div className="detail-score">
               {detail.score.score}
-              <small>truth score / 100</small>
+              <small>squeeze score / 100</small>
             </div>
           ) : (
             <div

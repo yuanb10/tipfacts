@@ -24,9 +24,9 @@ function ScoreBadge({
 }) {
   if (score != null) {
     return (
-      <div className={`score-badge ${scoreLevel(score.score)}`} title={`Truth score ${score.score} of 100`}>
+      <div className={`score-badge ${scoreLevel(score.score)}`} title={`Squeeze score ${score.score} of 100`}>
         <div className="score-num">{score.score}</div>
-        <div className="score-label">truth score</div>
+        <div className="score-label">squeeze score</div>
       </div>
     );
   }
@@ -88,7 +88,7 @@ export default function RankingPage() {
         </h1>
         <p className="page-sub">
           Objective facts about how venues handle tipping — presets, pre/post-tax math,
-          counter vs. table, hidden fees. Higher truth score = more aggressive tipping
+          counter vs. table, hidden fees. Higher squeeze score = more aggressive tipping
           practices. Only photo-verified facts move the score.
         </p>
       </div>
