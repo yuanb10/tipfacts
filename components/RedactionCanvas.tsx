@@ -45,8 +45,11 @@ interface View {
 
 /** Longest side of the working image, px — keeps mobile canvas work cheap. */
 const MAX_SIDE = 1600;
+/** Longest side of the exported image, px. Receipts are text: 1200px grayscale
+ * is plenty for the reader model and keeps stored bytes / tokens small. */
+const EXPORT_MAX_SIDE = 1200;
 /** Exported JPEG quality. */
-const JPEG_QUALITY = 0.82;
+const JPEG_QUALITY = 0.8;
 /** Boxes smaller than this (image px) are discarded as accidental taps. */
 const MIN_BOX = 8;
 /** Pointer travel (CSS px) below this counts as a tap, not a drag. */
@@ -439,19 +442,23 @@ export default function RedactionCanvas({
     const base = baseRef.current;
     if (!base || exporting) return;
     setExporting(true);
-    // Paint at full working resolution so the stored copy stays legible.
+    // Export small + grayscale: receipts are high-contrast text, so 1200px B&W
+    // is plenty for the reader model and keeps stored bytes / tokens small.
+    const ex = Math.min(1, EXPORT_MAX_SIDE / Math.max(base.width, base.height));
     const out = document.createElement('canvas');
-    out.width = base.width;
-    out.height = base.height;
+    out.width = Math.max(1, Math.round(base.width * ex));
+    out.height = Math.max(1, Math.round(base.height * ex));
     const ctx = out.getContext('2d');
     if (!ctx) {
       setExporting(false);
       setError('Could not export the image in this browser.');
       return;
     }
-    ctx.drawImage(base, 0, 0);
+    ctx.filter = 'grayscale(1)';
+    ctx.drawImage(base, 0, 0, out.width, out.height);
+    ctx.filter = 'none';
     ctx.fillStyle = '#000';
-    for (const b of boxesRef.current) ctx.fillRect(b.x, b.y, b.w, b.h);
+    for (const b of boxesRef.current) ctx.fillRect(b.x * ex, b.y * ex, b.w * ex, b.h * ex);
     out.toBlob(
       (blob) => {
         setExporting(false);
