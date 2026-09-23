@@ -14,6 +14,15 @@ function clientIp(req: NextRequest): string {
 }
 
 /**
+ * Max submissions per IP per hour. Default 20 — generous enough for real
+ * testing, still a backstop against floods. Override with SUBMIT_RATE_LIMIT.
+ */
+function submitRateLimit(): number {
+  const raw = parseInt(process.env.SUBMIT_RATE_LIMIT ?? '', 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : 20;
+}
+
+/**
  * POST /api/submissions
  * Receipt-first submission endpoint (Sprint 1). Accepts multipart/form-data
  * built by the multi-step form at /submit. v1: reports publish immediately
@@ -40,7 +49,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  const rl = await storage.checkRateLimit('submit:' + ip, 5, 3600_000);
+  const rl = await storage.checkRateLimit('submit:' + ip, submitRateLimit(), 3600_000);
   if (!rl.allowed) {
     return NextResponse.json(
       { ok: false, error: 'Too many submissions — please try again later.' },

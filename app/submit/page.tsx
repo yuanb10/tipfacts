@@ -528,19 +528,9 @@ function VenuePicker({
           </div>
         </>
       )}
-
-      <div className="field">
-        <label className="field-label" htmlFor="area">
-          Neighborhood / area
-        </label>
-        <input type="text" id="area" name="area" maxLength={80} />
-        <p className="hint">Optional — leave blank and we&apos;ll fill it in.</p>
-      </div>
     </div>
   );
 }
-
-/* ------------------------------------------------- step 0: track chooser */
 
 function TrackChooser({
   preselect,
