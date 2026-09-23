@@ -23,6 +23,10 @@ function fmtDate(iso: string): string {
   }
 }
 
+function fmtPct(n: number): string {
+  return Number.isInteger(n) ? n + '%' : n.toFixed(1) + '%';
+}
+
 function labelOf(term: string, value: string): string {
   if (term === 'Service type') return SERVICE_TYPE_LABELS[value] ?? value;
   if (term === 'Tip calculated on') return TIP_BASE_LABELS[value] ?? value;
@@ -53,8 +57,8 @@ export async function generateMetadata({
       ? 'awaiting verified evidence'
       : 'no reports yet';
   return {
-    title: `${venue.name} tipping facts — presets, fees, squeeze score | TipFacts`,
-    description: `${venue.name} in ${venue.city}: ${state}. ${approvedCount} approved report${approvedCount === 1 ? '' : 's'}${unverifiedCount ? `, ${unverifiedCount} unverified` : ''}. Objective, photo-verified tipping facts — no opinions.`,
+    title: `${venue.name} tipping — tip presets, tip base, service fee, squeeze score | TipFacts`,
+    description: `${venue.name} in ${venue.city}: ${state}. ${approvedCount} approved report${approvedCount === 1 ? '' : 's'}${unverifiedCount ? `, ${unverifiedCount} unverified` : ''}. Objective, photo-verified tipping facts: tip presets, pre-tax vs post-tax tip base, extra service fees, guilt signals. No opinions.`,
   };
 }
 
@@ -75,6 +79,183 @@ function EvidenceThumb({ evidence }: { evidence: PublicEvidence }) {
         loading="lazy"
       />
     </a>
+  );
+}
+
+/** Big-answer hero stat for a three-question section. */
+function AnswerHero({
+  children,
+  verified,
+}: {
+  children: React.ReactNode;
+  verified?: boolean;
+}) {
+  return (
+    <div className="answer-hero">
+      <div className="answer-hero-value">{children}</div>
+      {verified && <span className="verified-chip">Verified</span>}
+    </div>
+  );
+}
+
+function EmptyAnswer({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="empty-state" style={{ padding: '20px 16px' }}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Question 1 — minimum decent tip: lowest tip preset observed on a
+ * photo-verified tip screen ("the cheap person's answer").
+ */
+function MinPresetSection({ detail }: { detail: VenueDetail }) {
+  const { backedFacts } = detail;
+  return (
+    <div className="detail-section">
+      <h2>Minimum decent tip</h2>
+      {backedFacts.minPreset === null ? (
+        <EmptyAnswer>
+          <strong>No preset data yet.</strong> No confirmed tip-screen photo for this
+          venue — nothing to compute a minimum from.
+        </EmptyAnswer>
+      ) : (
+        <>
+          <AnswerHero verified>
+            <span className="answer-big">{fmtPct(backedFacts.minPreset)}</span>
+          </AnswerHero>
+          <p className="score-explainer">
+            The lowest preset observed on a photo-verified tip screen — the cheap
+            person&rsquo;s answer: what you can pay without being an a-hole.
+            {backedFacts.presets.length > 1 &&
+              ` All verified presets seen here: ${backedFacts.presets.map(fmtPct).join(', ')}.`}
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Question 2 — tip tax base: pre-tax or post-tax, reported from approved
+ * receipts. Post-tax gets a visible warning.
+ */
+function TipBaseSection({ detail }: { detail: VenueDetail }) {
+  const { backedFacts } = detail;
+  const base = backedFacts.tipBase;
+  return (
+    <div className="detail-section">
+      <h2>Tip calculated on</h2>
+      {base === '' || base === 'not-sure' ? (
+        <EmptyAnswer>
+          <strong>Unknown.</strong>{' '}
+          {base === 'not-sure'
+            ? 'Reporters were not sure whether this venue calculates tips pre-tax or post-tax — no confirmed receipt settles it yet.'
+            : 'No confirmed receipt data on the tip tax base yet — no approved receipt verifies it.'}
+        </EmptyAnswer>
+      ) : (
+        <>
+          <AnswerHero verified>{TIP_BASE_LABELS[base] ?? base}</AnswerHero>
+          {base === 'post-tax' && (
+            <div className="warning-callout" role="alert">
+              <strong>Warning: post-tax tipping.</strong> This venue calculates the tip
+              on the post-tax total, so a {detail.backedFacts.minPreset !== null ? fmtPct(detail.backedFacts.minPreset) : 'typical'} tip here costs more than the same percentage at a pre-tax venue. Verified from approved receipts.
+            </div>
+          )}
+          {base === 'pre-tax' && (
+            <p className="score-explainer">
+              Tips are calculated on the pre-tax subtotal here — the less costly
+              standard. Verified from approved receipts.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Question 3 — guilt signals: % who felt pressured, whether custom/no-tip was
+ * easy to choose, staff-watching mentions (data-supported only).
+ */
+function GuiltSignalsSection({ detail }: { detail: VenueDetail }) {
+  const guilt = detail.guiltStats;
+  const guiltTotal = guilt.yes + guilt.no;
+  const guiltPct = guiltTotal > 0 ? Math.round((guilt.yes / guiltTotal) * 100) : null;
+
+  const watchRe = /\bwatch(?:ing|ed)?\b|\bstar(?:e|ing|ed)?\b|\bobserv(?:e|ed|ing)\b/;
+  const watchCount = detail.guiltNotes.filter((n) =>
+    watchRe.test(n.note.toLowerCase()),
+  ).length;
+
+  const optOut = detail.backedFacts.easyOptOut;
+  const hasAnyData =
+    guiltPct !== null || optOut !== 'skip' || watchCount > 0 || detail.guiltNotes.length > 0;
+
+  return (
+    <div className="detail-section">
+      <h2>Guilt signals</h2>
+      {!hasAnyData ? (
+        <EmptyAnswer>
+          <strong>No pressure data yet.</strong> Nobody has answered the
+          tipping-pressure question for this venue.
+        </EmptyAnswer>
+      ) : (
+        <>
+          <AnswerHero>
+            {guiltPct === null ? (
+              <span className="page-sub">No answers yet</span>
+            ) : (
+              <span className="answer-big">{guiltPct}%</span>
+            )}
+          </AnswerHero>
+          {guiltPct !== null && (
+            <p className="score-explainer">
+              of {guiltTotal} respondent{guiltTotal === 1 ? '' : 's'} said they felt
+              tipping pressure ({guilt.yes} yes, {guilt.no} no
+              {guilt.skipped > 0 ? `, ${guilt.skipped} skipped` : ''}). Factual,
+              unscored unless corroborated — see the score breakdown below.
+            </p>
+          )}
+          <dl style={{ marginTop: 12 }}>
+            <div className="fact-row">
+              <dt>Easy to choose a custom tip or no tip</dt>
+              <dd>
+                {optOut === 'skip' ? (
+                  'Unknown — no confirmed screen data'
+                ) : (
+                  <>
+                    {optOut === 'yes' ? 'Yes' : 'No'}{' '}
+                    <span className="verified-chip" style={{ marginLeft: 4 }}>
+                      Verified
+                    </span>
+                  </>
+                )}
+              </dd>
+            </div>
+            {watchCount > 0 && (
+              <div className="fact-row">
+                <dt>Staff watching while choosing</dt>
+                <dd>
+                  Mentioned in {watchCount} approved report
+                  {watchCount === 1 ? '' : 's'}{' '}
+                  <span className="unverified-chip" style={{ marginLeft: 4 }}>
+                    Subjective
+                  </span>
+                </dd>
+              </div>
+            )}
+          </dl>
+          {detail.guiltNotes.length > 0 && (
+            <p className="score-explainer">
+              Individual experiences are quoted in{' '}
+              <a href="#subjective">How people felt (subjective)</a> — never scored.
+            </p>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 
@@ -130,10 +311,13 @@ function ScoreBlock({ detail }: { detail: VenueDetail }) {
         </div>
       ))}
       <p className="score-explainer">
-        Squeeze score (provisional): starts at 0. +20 post-tax calculation. +15 if the lowest
-        preset is ≥25% (+25 if ≥30%). +15 for counter/takeout tip prompts. +15 for
-        non-food retail tip prompts. +10 for hidden fees or surcharges. Capped at 100. Only
-        photo-verified facts count.
+        Squeeze Score v2 rubric (locked): starts at 0. Table service — lowest preset
+        ≤15%: +0; 16–18%: +15; above 18%: +30. Counter / takeout / non-food retail —
+        any tip prompt: +25; no easy custom-tip / no-tip option: +10. Tip calculated
+        on the post-tax total: +20. Extra fees — first fee: +10, each additional: +5.
+        Corroborated guilt (≥2 approved “yes” from distinct reporters): +15, labeled
+        community-reported. Capped at 100. Evidence-only: only photo-verified facts
+        move the score.
       </p>
     </div>
   );
@@ -145,9 +329,7 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
   if (!detail) notFound();
   const { venue } = detail;
 
-  const guilt = detail.guiltStats;
-  const guiltTotal = guilt.yes + guilt.no;
-  const guiltPct = guiltTotal > 0 ? Math.round((guilt.yes / guiltTotal) * 100) : null;
+  const hasNoData = detail.approvedCount === 0;
 
   return (
     <div>
@@ -194,34 +376,54 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
+      {hasNoData && (
+        <div className="no-data-cta">
+          <p>
+            <strong>No tipping data yet — be the first to report.</strong> Snap the tip
+            screen or your receipt and put this venue on the record.
+          </p>
+          <a href={`/submit?venueId=${encodeURIComponent(id)}`} className="btn btn-primary">
+            Report this venue
+          </a>
+        </div>
+      )}
+
+      {/* The three questions a checker asks, answered first */}
+      <MinPresetSection detail={detail} />
+      <TipBaseSection detail={detail} />
+      <GuiltSignalsSection detail={detail} />
+
+      {/* Score sits BELOW the three answers */}
       <ScoreBlock detail={detail} />
 
-      <div className="detail-section">
-        <h2>Aggregated facts</h2>
-        <dl>
-          {detail.factRows.map((row) => (
-            <div className="fact-row" key={row.term}>
-              <dt>
-                {row.term}{' '}
-                {row.kind === 'verified' ? (
-                  <span className="verified-chip" style={{ marginLeft: 4 }}>
-                    Verified
-                  </span>
-                ) : (
-                  <span className="unverified-chip" style={{ marginLeft: 4 }}>
-                    Community consensus
-                  </span>
-                )}
-              </dt>
-              <dd>{labelOf(row.term, row.value)}</dd>
-            </div>
-          ))}
-        </dl>
-        <p className="score-explainer">
-          “Verified” facts are backed by at least one confirmed receipt or screen photo.
-          “Community consensus” facts come from text-only reports and are not scored.
-        </p>
-      </div>
+      {detail.approvedCount > 0 && (
+        <div className="detail-section">
+          <h2>Aggregated facts</h2>
+          <dl>
+            {detail.factRows.map((row) => (
+              <div className="fact-row" key={row.term}>
+                <dt>
+                  {row.term}{' '}
+                  {row.kind === 'verified' ? (
+                    <span className="verified-chip" style={{ marginLeft: 4 }}>
+                      Verified
+                    </span>
+                  ) : (
+                    <span className="unverified-chip" style={{ marginLeft: 4 }}>
+                      Community consensus
+                    </span>
+                  )}
+                </dt>
+                <dd>{labelOf(row.term, row.value)}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="score-explainer">
+            “Verified” facts are backed by at least one confirmed receipt or screen photo.
+            “Community consensus” facts come from text-only reports and are not scored.
+          </p>
+        </div>
+      )}
 
       {detail.unevidencedReports.length > 0 && (
         <div className="detail-section">
@@ -256,21 +458,14 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
-      <div className="detail-section">
+      <div className="detail-section" id="subjective">
         <h2>How people felt (subjective)</h2>
         <p className="score-explainer" style={{ marginTop: 0 }}>
-          Subjective and never scored.
+          Subjective and never scored. Individual experiences, quoted verbatim.
         </p>
-        {guiltPct === null ? (
-          <p className="page-sub">Nobody answered the tipping-pressure question yet.</p>
+        {detail.guiltNotes.length === 0 ? (
+          <p className="page-sub">No pressure notes yet.</p>
         ) : (
-          <p>
-            <strong>{guiltPct}%</strong> of {guiltTotal} respondent{guiltTotal === 1 ? '' : 's'}{' '}
-            felt tipping pressure ({guilt.yes} yes, {guilt.no} no
-            {guilt.skipped > 0 ? `, ${guilt.skipped} skipped` : ''}).
-          </p>
-        )}
-        {detail.guiltNotes.length > 0 && (
           <>
             <h3 style={{ fontSize: 15, margin: '12px 0 8px' }}>In their words</h3>
             {detail.guiltNotes.map((n) => (
@@ -346,8 +541,26 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
         </div>
       )}
 
+      <div className="detail-section">
+        <h2>Is this your business?</h2>
+        <p className="score-explainer" style={{ marginTop: 0 }}>
+          See a fact that&rsquo;s wrong? Merchants can dispute a fact by submitting
+          counter-evidence — a current tip-screen or receipt photo that shows it
+          differently. Disputes are reviewed with the same evidence-only standard; no
+          payment can alter or suppress a score.
+        </p>
+        <div className="btn-row" style={{ marginTop: 12 }}>
+          <a
+            href={`/submit?venueId=${encodeURIComponent(id)}`}
+            className="btn btn-secondary"
+          >
+            Dispute a fact (submit counter-evidence)
+          </a>
+        </div>
+      </div>
+
       <div className="btn-row" style={{ marginBottom: 32 }}>
-        <a href="/submit" className="btn btn-primary">
+        <a href={`/submit?venueId=${encodeURIComponent(id)}`} className="btn btn-primary">
           Report this venue
         </a>
       </div>

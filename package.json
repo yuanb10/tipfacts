@@ -12,7 +12,8 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "osm-pbf-parser": "^2.3.0",
-    "typescript": "latest"
+    "typescript": "latest",
+    "vitest": "^5.0.1"
   },
   "name": "tipfacts",
   "private": true,
@@ -22,7 +23,8 @@
     "seed": "node scripts/seed.ts",
     "start": "next start",
     "wipe": "node scripts/wipe.ts",
-    "migrate": "node scripts/migrate.ts"
+    "migrate": "node scripts/migrate.ts",
+    "test": "vitest run"
   },
   "version": "0.1.0"
 }

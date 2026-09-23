@@ -1,25 +1,45 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import type { ReceiptParsed } from '@/lib/storage';
 import { bestVenueMatch } from '@/lib/venue-match';
+import { inferTaxBase, tipPercentOf, fmtPct, type TaxBaseGuess } from '@/lib/tip-math';
 import RedactionCanvas from '@/components/RedactionCanvas';
 
 /**
- * Multi-step, receipt-first submission flow (Sprint 1):
- *   Step 1 — Add evidence (receipt / tip-screen photo upload)
- *   Step 2 — Review & confirm each photo (original vs redacted, correct OCR)
- *   Step 3 — The facts (venue + objective fields)
- *   Step 4 — Done (pending moderation)
+ * Two-track contribution flow (PRD C.1 / C.2 / C.4):
+ *
+ *   Step 0 — track chooser: "Auto: snap a receipt" vs "Manual: type the numbers"
+ *
+ *   AUTO track:  1 evidence (receipt/tip-screen photo) → 2 redaction review &
+ *     confirm (on-device RedactionCanvas; the ORIGINAL photo never leaves the
+ *     device, only the redacted export is uploaded) → 3 VLM receipt read:
+ *     POST /api/receipt/extract receives ONLY the redacted JPEG bytes, and the
+ *     user confirms/corrects every proposed value (never auto-published) →
+ *     4 the facts → done.
+ *
+ *   MANUAL track: 1 type subtotal / tax / tip / fees; the app computes the tip %
+ *     and guesses pre-tax vs post-tax (user confirms) → 2 the facts → done.
+ *
+ *   Both tracks end in the same facts form: venue (required — search incl. OSM
+ *   shells, or create manually), the 3 simple questions (pressured? easy custom
+ *   tip? counter/table/takeout?), everything else optional.
  *
  * Evidence API contracts (sibling agent):
  *   POST /api/evidence {photo, type} ->
  *     { ok, evidence: { id, type, redactedUrl, redactionStatus, parsed, ocrAvailable } }
  *   POST /api/evidence/[id]/confirm {confirmed, attestedNoPii?, parsed?} ->
  *     { ok, evidence }
+ * Receipt-extract API contract (teammate):
+ *   POST /api/receipt/extract (multipart, field `image` = redacted JPEG) ->
+ *     200 { ok: true, data: { venue, subtotal, tax, presets, tip,
+ *            fees: [{label, amount}], paidTotal, tipPercentage,
+ *            taxBase: 'pre'|'post'|'unknown', confidence } } (nulls when unreadable)
+ *     503 { ok: false, error, fallback: 'manual' } -> inline manual fallback.
  */
 
-type Step = 1 | 2 | 3;
+type Track = 'auto' | 'manual';
 type EvidenceKind = 'receipt' | 'screen';
 
 interface ParsedDraft {
@@ -54,7 +74,50 @@ interface EvidenceItem {
   draft: ParsedDraft;
   error: string;
   confirming: boolean;
+  /** The redacted+compressed export from RedactionCanvas — the SAME bytes that
+   * were uploaded to /api/evidence. Only these bytes ever go to
+   * /api/receipt/extract; the original photo is never sent anywhere. */
+  redactedFile: File | null;
 }
+
+/** Shape of /api/receipt/extract's `data` payload (nulls for unreadable fields). */
+interface ExtractedReceipt {
+  venue?: string | null;
+  subtotal?: number | null;
+  tax?: number | null;
+  presets?: number[] | null;
+  tip?: number | null;
+  fees?: { label: string; amount?: number | null }[] | null;
+  paidTotal?: number | null;
+  tipPercentage?: number | null;
+  taxBase?: 'pre' | 'post' | 'unknown' | null;
+  confidence?: 'low' | 'medium' | 'high' | null;
+}
+
+/** User-confirmed numbers from the auto track's receipt-read step (all editable strings). */
+interface ConfirmedNumbers {
+  venue: string;
+  subtotal: string;
+  tax: string;
+  tip: string;
+  paidTotal: string;
+  tipPct: string;
+  presets: string;
+  fees: string;
+  taxBase: 'pre-tax' | 'post-tax' | 'not-sure';
+}
+
+const EMPTY_NUMBERS: ConfirmedNumbers = {
+  venue: '',
+  subtotal: '',
+  tax: '',
+  tip: '',
+  paidTotal: '',
+  tipPct: '',
+  presets: '',
+  fees: '',
+  taxBase: 'not-sure',
+};
 
 const EMPTY_DRAFT: ParsedDraft = {
   merchant: '',
@@ -100,8 +163,14 @@ const KIND_LABEL: Record<EvidenceKind, string> = {
   screen: 'Tip-screen photo',
 };
 
-function Stepper({ step }: { step: Step }) {
-  const labels = ['Proof', 'Redaction check', 'The facts'];
+const FEE_OPTIONS: [string, string][] = [
+  ['service-charge', 'Service charge'],
+  ['card-surcharge', 'Credit-card surcharge'],
+  ['none', 'None'],
+  ['other', 'Other'],
+];
+
+function Stepper({ labels, step }: { labels: string[]; step: number }) {
   return (
     <div className="stepper" aria-label="Progress">
       {labels.map((label, i) => (
@@ -136,16 +205,35 @@ interface VenueHit {
   distanceMeters?: number;
 }
 
+/** A venue preselected via ?venueId= (directory "be the first to report" CTA). */
+interface PreselectVenue {
+  id: string;
+  name: string;
+  city: string;
+  area: string;
+  address: string;
+  category: string;
+}
+
 /**
- * Venue picker for step 3: users never type a full venue name from scratch.
+ * Venue picker: users never type a full venue name from scratch.
  *   - OCR merchant pre-fill: fuzzy-matches the receipt's merchant against
  *     known venues and proposes the best hit for confirmation.
+ *   - VLM venue proposal: passed in via `merchants` as a separate prefill source.
+ *   - ?venueId= preselect: the directory's "be the first to report" CTA lands
+ *     here with a venue preselected; the user can still change it.
  *   - Type-ahead: debounced search over all listings (shells included).
  *   - Nearby: optional geolocation → venues within ~800m.
  *   - Manual fallback: type a new name; it becomes a pending venue.
  * Selecting a listing posts `venueId`; the manual path posts venueName+city.
  */
-function VenuePicker({ merchants }: { merchants: string[] }) {
+function VenuePicker({
+  merchants,
+  preselect,
+}: {
+  merchants: string[];
+  preselect: PreselectVenue | null;
+}) {
   const [selected, setSelected] = useState<VenueHit | null>(null);
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<VenueHit[]>([]);
@@ -158,10 +246,31 @@ function VenuePicker({ merchants }: { merchants: string[] }) {
   const didPrefill = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
-  // OCR merchant pre-fill — once, on mount.
+  // Merchant / preselect pre-fill — once, on mount.
   useEffect(() => {
     if (didPrefill.current) return;
     didPrefill.current = true;
+
+    // ?venueId= wins: the directory sent the user here for THIS venue.
+    if (preselect) {
+      setSelected({
+        id: preselect.id,
+        name: preselect.name,
+        city: preselect.city,
+        area: preselect.area,
+        address: preselect.address,
+        lat: null,
+        lng: null,
+        category: preselect.category,
+        source: 'manual',
+      });
+      setNotice({
+        kind: 'detected',
+        text: `Reporting for ${preselect.name} — change it if this isn't the right place.`,
+      });
+      return;
+    }
+
     const merchant = merchants.map((m) => m.trim()).find(Boolean);
     if (!merchant) return;
     let cancelled = false;
@@ -192,7 +301,7 @@ function VenuePicker({ merchants }: { merchants: string[] }) {
     return () => {
       cancelled = true;
     };
-    // merchants is fixed for this mount (step 3 renders once per visit).
+    // merchants/preselect are fixed for this mount (facts step renders once per visit).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -435,17 +544,774 @@ function VenuePicker({ merchants }: { merchants: string[] }) {
   );
 }
 
-export default function SubmitPage() {
-  const [step, setStep] = useState<Step>(1);
+/* ------------------------------------------------- step 0: track chooser */
+
+function TrackChooser({
+  preselect,
+  onPick,
+}: {
+  preselect: PreselectVenue | null;
+  onPick: (t: Track) => void;
+}) {
+  const card: React.CSSProperties = {
+    display: 'block',
+    width: '100%',
+    textAlign: 'left',
+    padding: '20px 18px',
+    marginBottom: 12,
+    borderRadius: 12,
+    border: '1px solid var(--border, #e2e2e2)',
+    background: 'var(--card, #fff)',
+    cursor: 'pointer',
+  };
+  return (
+    <div className="form-card">
+      {preselect && (
+        <div className="form-success" style={{ marginBottom: 16 }}>
+          <p style={{ margin: 0 }}>
+            You&apos;re reporting for <strong>{preselect.name}</strong> — be the first to log
+            a report there.
+          </p>
+        </div>
+      )}
+      <p className="hint" style={{ marginTop: 0 }}>
+        Two ways to log a report. Pick whichever is easier.
+      </p>
+      <button type="button" style={card} onClick={() => onPick('auto')}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>📸 Auto: snap a receipt</div>
+        <p className="hint" style={{ margin: 0 }}>
+          Photograph the receipt, black out private details yourself, and we&apos;ll read the
+          numbers for you to confirm. Takes ~60 seconds.
+        </p>
+      </button>
+      <button type="button" style={card} onClick={() => onPick('manual')}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>
+          ✏️ Manual: type the numbers
+        </div>
+        <p className="hint" style={{ margin: 0 }}>
+          No receipt handy? Type the subtotal, tax, and tip — the app does the math.
+        </p>
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------- manual track: type the numbers */
+
+interface ManualNums {
+  subtotal: string;
+  tax: string;
+  tip: string;
+  fees: string[];
+  base: 'pre-tax' | 'post-tax' | 'not-sure';
+  /** True once the user explicitly picked a base — the live guess stops overriding it. */
+  baseExplicit: boolean;
+}
+
+const EMPTY_MANUAL: ManualNums = {
+  subtotal: '',
+  tax: '',
+  tip: '',
+  fees: [],
+  base: 'not-sure',
+  baseExplicit: false,
+};
+
+function ManualNumbersStep({
+  initial,
+  onContinue,
+  onBack,
+}: {
+  initial: ManualNums;
+  onContinue: (m: ManualNums) => void;
+  onBack: () => void;
+}) {
+  const [subtotal, setSubtotal] = useState(initial.subtotal);
+  const [tax, setTax] = useState(initial.tax);
+  const [tip, setTip] = useState(initial.tip);
+  const [fees, setFees] = useState<string[]>(initial.fees);
+  const [baseLocked, setBaseLocked] = useState(initial.baseExplicit);
+  const [base, setBase] = useState<'pre-tax' | 'post-tax' | 'not-sure'>(initial.base);
+
+  const st = numOrNull(subtotal);
+  const tx = numOrNull(tax);
+  const tp = numOrNull(tip);
+  const pct = tipPercentOf(tp, st);
+  const guess: TaxBaseGuess = inferTaxBase(st, tx, tp);
+
+  // Follow the live guess until the user explicitly picks a base themselves.
+  useEffect(() => {
+    if (!baseLocked) setBase(guess === 'unknown' ? 'not-sure' : guess);
+  }, [guess, baseLocked]);
+
+  function toggleFee(v: string) {
+    setFees((prev) => (prev.includes(v) ? prev.filter((f) => f !== v) : [...prev, v]));
+  }
+
+  function pickBase(v: 'pre-tax' | 'post-tax' | 'not-sure') {
+    setBase(v);
+    setBaseLocked(true);
+  }
+
+  // Everything except the venue (picked next) is optional — never block a
+  // motivated contributor, even with all fields blank.
+
+  return (
+    <div className="form-card">
+      <p className="hint" style={{ marginTop: 0 }}>
+        Just the numbers off the receipt — everything is optional except the venue, which
+        you&apos;ll pick next.
+      </p>
+
+      <div className="field">
+        <label className="field-label" htmlFor="m-subtotal">
+          Subtotal (before tax)
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="m-subtotal"
+          value={subtotal}
+          maxLength={20}
+          placeholder="e.g. 42.50"
+          onChange={(e) => setSubtotal(e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="m-tax">
+          Tax
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="m-tax"
+          value={tax}
+          maxLength={20}
+          placeholder="e.g. 4.10"
+          onChange={(e) => setTax(e.target.value)}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="m-tip">
+          Tip you paid
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="m-tip"
+          value={tip}
+          maxLength={20}
+          placeholder="e.g. 8.50"
+          onChange={(e) => setTip(e.target.value)}
+        />
+      </div>
+
+      {pct != null && (
+        <div className="form-success" style={{ marginBottom: 12 }}>
+          <p style={{ margin: 0 }}>
+            That&apos;s a <strong>{fmtPct(pct)}</strong> tip on the subtotal.
+          </p>
+        </div>
+      )}
+
+      <div className="field">
+        <span className="field-label">Any extra fees?</span>
+        <div className="checkbox-group">
+          {FEE_OPTIONS.map(([val, label]) => (
+            <label key={val} className="checkbox-option">
+              <input
+                type="checkbox"
+                checked={fees.includes(val)}
+                onChange={() => toggleFee(val)}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
+        {guess === 'unknown' ? (
+          <p className="hint">
+            We couldn&apos;t tell from these numbers — pick your best guess below (or
+            &ldquo;not sure&rdquo;).
+          </p>
+        ) : (
+          <p className="hint">
+            Our best guess: <strong>{guess === 'pre-tax' ? 'pre-tax subtotal' : 'post-tax total'}</strong> —
+            confirm it below.
+          </p>
+        )}
+        <div className="radio-group">
+          {(
+            [
+              ['pre-tax', 'Pre-tax subtotal'],
+              ['post-tax', 'Post-tax total'],
+              ['not-sure', 'Not sure'],
+            ] as const
+          ).map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input type="radio" checked={base === val} onChange={() => pickBase(val)} />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="btn-row" style={{ marginTop: 16 }}>
+        <button type="button" className="btn btn-secondary" onClick={onBack}>
+          Back
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={() => onContinue({ subtotal, tax, tip, fees, base, baseExplicit: baseLocked })}
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* -------------------- auto track: VLM reads the redacted receipt, user confirms */
+
+type ExtractStatus = 'reading' | 'ready' | 'fallback';
+
+function numbersFromExtracted(d: ExtractedReceipt, ocrMerchant: string): ConfirmedNumbers {
+  const pct =
+    d.tipPercentage ??
+    (d.tip != null && d.subtotal != null && d.subtotal > 0
+      ? (d.tip / d.subtotal) * 100
+      : null);
+  return {
+    venue: d.venue ?? ocrMerchant ?? '',
+    subtotal: numStr(d.subtotal),
+    tax: numStr(d.tax),
+    tip: numStr(d.tip),
+    paidTotal: numStr(d.paidTotal),
+    tipPct: pct == null ? '' : String(Math.round(pct * 10) / 10),
+    presets: (d.presets ?? []).join(', '),
+    fees: (d.fees ?? [])
+      .map((f) => (f.amount != null ? `${f.label} ($${f.amount})` : f.label))
+      .join(', '),
+    taxBase:
+      d.taxBase === 'pre' ? 'pre-tax' : d.taxBase === 'post' ? 'post-tax' : 'not-sure',
+  };
+}
+
+function ExtractStep({
+  file,
+  ocrMerchant,
+  onDone,
+  onBack,
+}: {
+  /** The redacted JPEG — the same bytes already uploaded via /api/evidence. */
+  file: File | null;
+  ocrMerchant: string;
+  onDone: (n: ConfirmedNumbers) => void;
+  onBack: () => void;
+}) {
+  const [status, setStatus] = useState<ExtractStatus>('reading');
+  const [fields, setFields] = useState<ConfirmedNumbers>({ ...EMPTY_NUMBERS, venue: ocrMerchant });
+  const didRun = useRef(false);
+
+  // Call the extraction endpoint ONCE. It receives only the redacted image
+  // bytes — the original photo is never sent anywhere.
+  useEffect(() => {
+    if (didRun.current) return;
+    didRun.current = true;
+    if (!file) {
+      setStatus('fallback');
+      return;
+    }
+    (async () => {
+      try {
+        const body = new FormData();
+        body.append('image', file, 'redacted.jpg');
+        const res = await fetch('/api/receipt/extract', { method: 'POST', body });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data && data.ok && data.data) {
+          setFields(numbersFromExtracted(data.data as ExtractedReceipt, ocrMerchant));
+          setStatus('ready');
+        } else {
+          // 503 (VLM unavailable) or anything else: friendly inline fallback,
+          // receipt stays attached, user types the numbers instead.
+          setStatus('fallback');
+        }
+      } catch {
+        setStatus('fallback');
+      }
+    })();
+    // file/ocrMerchant are fixed for this mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function set<K extends keyof ConfirmedNumbers>(k: K, v: ConfirmedNumbers[K]) {
+    setFields((prev) => ({ ...prev, [k]: v }));
+  }
+
+  return (
+    <div className="form-card">
+      <h2 style={{ fontSize: 18, marginTop: 0 }}>Check what we read</h2>
+
+      {status === 'reading' && (
+        <p className="hint">Reading your receipt… this takes a few seconds.</p>
+      )}
+
+      {status === 'fallback' && (
+        <div className="form-error" style={{ marginBottom: 12 }}>
+          <p style={{ margin: 0 }}>
+            Couldn&apos;t read the receipt automatically — enter the numbers below.
+            Your receipt photo stays attached to the report.
+          </p>
+        </div>
+      )}
+
+      {status !== 'reading' && (
+        <>
+          {status === 'ready' && (
+            <p className="hint" style={{ marginTop: 0 }}>
+              Here&apos;s what we read from the redacted photo. Fix anything
+              that&apos;s wrong — nothing publishes until you confirm it.
+            </p>
+          )}
+
+          <div className="field">
+            <label className="field-label" htmlFor="x-venue">
+              Venue
+            </label>
+            <input
+              type="text"
+              id="x-venue"
+              value={fields.venue}
+              maxLength={120}
+              onChange={(e) => set('venue', e.target.value)}
+            />
+          </div>
+
+          {(
+            [
+              ['subtotal', 'Subtotal'],
+              ['tax', 'Tax'],
+              ['tip', 'Tip'],
+              ['paidTotal', 'Paid total'],
+            ] as const
+          ).map(([key, label]) => (
+            <div className="field" key={key}>
+              <label className="field-label" htmlFor={`x-${key}`}>
+                {label}
+              </label>
+              <input
+                type="text"
+                inputMode="decimal"
+                id={`x-${key}`}
+                value={fields[key]}
+                maxLength={20}
+                onChange={(e) => set(key, e.target.value)}
+              />
+            </div>
+          ))}
+
+          <div className="field">
+            <label className="field-label" htmlFor="x-tippct">
+              Tip percentage
+            </label>
+            <input
+              type="text"
+              inputMode="decimal"
+              id="x-tippct"
+              value={fields.tipPct}
+              maxLength={10}
+              placeholder="e.g. 20"
+              onChange={(e) => set('tipPct', e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="x-presets">
+              Tip presets shown
+            </label>
+            <input
+              type="text"
+              id="x-presets"
+              value={fields.presets}
+              maxLength={60}
+              placeholder="e.g. 20, 25, 30"
+              onChange={(e) => set('presets', e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field-label" htmlFor="x-fees">
+              Fees on the receipt
+            </label>
+            <input
+              type="text"
+              id="x-fees"
+              value={fields.fees}
+              maxLength={120}
+              placeholder="e.g. service charge"
+              onChange={(e) => set('fees', e.target.value)}
+            />
+          </div>
+
+          <div className="field">
+            <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
+            <div className="radio-group">
+              {(
+                [
+                  ['pre-tax', 'Pre-tax subtotal'],
+                  ['post-tax', 'Post-tax total'],
+                  ['not-sure', 'Not sure'],
+                ] as const
+              ).map(([val, label]) => (
+                <label key={val} className="radio-option">
+                  <input
+                    type="radio"
+                    checked={fields.taxBase === val}
+                    onChange={() => set('taxBase', val)}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      <div className="btn-row" style={{ marginTop: 16 }}>
+        <button type="button" className="btn btn-secondary" onClick={onBack}>
+          Back
+        </button>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={status === 'reading'}
+          onClick={() => onDone(fields)}
+        >
+          {status === 'reading' ? 'Reading…' : 'These look right — continue'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* --------------------------------- shared final step: the facts + 3 questions */
+
+function FactsForm({
+  track,
+  merchants,
+  preselect,
+  confirmedCount,
+  prefillPresets,
+  prefillTipBase,
+  showFees,
+  manualFees,
+  buildFactsLine,
+  confirmedIds,
+  onBack,
+  onSubmitted,
+}: {
+  track: Track;
+  merchants: string[];
+  preselect: PreselectVenue | null;
+  confirmedCount: number;
+  prefillPresets: string;
+  prefillTipBase: 'pre-tax' | 'post-tax' | 'not-sure' | '';
+  showFees: boolean;
+  manualFees: string[];
+  buildFactsLine: (tipBase: string) => string;
+  confirmedIds: string[];
+  onBack: () => void;
+  onSubmitted: () => void;
+}) {
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  async function onSubmitFacts(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    setError('');
+    setSubmitting(true);
+    try {
+      const form = e.currentTarget;
+      const body = new FormData(form);
+      body.set('evidenceIds', JSON.stringify(confirmedIds));
+      // Manual track captured fees in the numbers step; auto track uses the
+      // checkboxes below.
+      if (track === 'manual') manualFees.forEach((f) => body.append('fees', f));
+      // The /api/submissions contract has no numeric fields, so confirmed
+      // receipt math rides along as a machine-readable line in notes —
+      // visible to moderators, never auto-published.
+      const userNotes = String(body.get('notes') ?? '').trim();
+      const line = buildFactsLine(String(body.get('tipBase') ?? ''));
+      body.set('notes', [userNotes, line].filter(Boolean).join('\n\n'));
+      const res = await fetch('/api/submissions', { method: 'POST', body });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setError(data.error || 'Something went wrong. Please try again.');
+      } else {
+        onSubmitted();
+        window.scrollTo(0, 0);
+      }
+    } catch {
+      setError('Network error. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <form className="form-card" onSubmit={onSubmitFacts}>
+      {/* Honeypot anti-spam field: invisible to humans */}
+      <input
+        type="text"
+        name="website"
+        className="honeypot"
+        tabIndex={-1}
+        autoComplete="off"
+        aria-hidden="true"
+      />
+
+      {error && <div className="form-error">{error}</div>}
+
+      <p className="hint" style={{ marginTop: 0 }}>
+        {confirmedCount > 0
+          ? `Evidence attached: ${confirmedCount} confirmed photo${confirmedCount > 1 ? 's' : ''}.`
+          : 'No photos attached.'}{' '}
+        Objective facts only — they feed the score.
+      </p>
+
+      <VenuePicker merchants={merchants} preselect={preselect} />
+
+      <div className="field">
+        <span className="field-label">
+          Service type <span className="required-mark">*</span>
+        </span>
+        <div className="radio-group">
+          {[
+            ['counter', 'Counter service'],
+            ['table', 'Table service'],
+            ['takeout', 'Takeout / pickup'],
+            ['nonfood', 'Non-food retail'],
+          ].map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input type="radio" name="serviceType" value={val} required />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <span className="field-label">Tip-screen presentation</span>
+        <div className="radio-group">
+          {[
+            ['staff-held', 'Staff held the screen facing me while I chose'],
+            ['handed-over', 'Screen handed to me or left on the counter'],
+            ['no-screen', 'No tip screen — no tip prompt at all'],
+            ['not-sure', 'Not sure'],
+          ].map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input type="radio" name="screenPresentation" value={val} />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="presets">
+          What the tip screen showed
+        </label>
+        <input
+          type="text"
+          id="presets"
+          name="presets"
+          placeholder="e.g. 20%, 25%, 30%"
+          maxLength={120}
+          defaultValue={prefillPresets}
+        />
+      </div>
+
+      <div className="field">
+        <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
+        <div className="radio-group">
+          {(
+            [
+              ['pre-tax', 'Pre-tax subtotal'],
+              ['post-tax', 'Post-tax total'],
+              ['not-sure', 'Not sure'],
+            ] as const
+          ).map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input
+                type="radio"
+                name="tipBase"
+                value={val}
+                defaultChecked={prefillTipBase === val}
+              />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      {showFees && (
+        <div className="field">
+          <span className="field-label">Any extra fees?</span>
+          <div className="checkbox-group">
+            {FEE_OPTIONS.map(([val, label]) => (
+              <label key={val} className="checkbox-option">
+                <input type="checkbox" name="fees" value={val} />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="field">
+        <span className="field-label">
+          Was it easy to choose a custom tip or no tip? (e.g. a clear custom/zero option,
+          not buried or guilt-tripped)
+        </span>
+        <div className="radio-group">
+          {[
+            ['yes', 'Yes, easy'],
+            ['no', 'No, hard or missing'],
+            ['skip', 'Skip'],
+          ].map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input type="radio" name="easyOptOut" value={val} />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <span className="field-label">
+          Did you feel pressured while choosing your tip? (e.g. staff watching you select)
+        </span>
+        <div className="radio-group">
+          {[
+            ['yes', 'Yes'],
+            ['no', 'No'],
+            ['skip', 'Skip'],
+          ].map(([val, label]) => (
+            <label key={val} className="radio-option">
+              <input type="radio" name="guilt" value={val} />
+              {label}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="experienceNote">
+          How it felt
+        </label>
+        <textarea id="experienceNote" name="experienceNote" maxLength={1000} />
+        <p className="hint">
+          How it felt — shown in a separate subjective section, never affects the score. No
+          staff names.
+        </p>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="notes">
+          Anything else
+        </label>
+        <textarea id="notes" name="notes" maxLength={1000} />
+        <p className="hint">Suggestions, feedback, anything we missed.</p>
+      </div>
+
+      <div className="btn-row">
+        <button type="button" className="btn btn-secondary" onClick={onBack}>
+          Back
+        </button>
+        <button type="submit" className="submit-btn" disabled={submitting}>
+          {submitting ? 'Submitting…' : 'Submit report'}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/* ------------------------------------------------------- facts line builder */
+
+/**
+ * The /api/submissions contract has no numeric fields, so confirmed receipt
+ * math rides along as a machine-readable line appended to `notes` — visible to
+ * moderators, never auto-published.
+ */
+function buildFactsLine(
+  src: { subtotal: string; tax: string; tip: string; paidTotal: string; tipPct: string } | null,
+  tipBase: string,
+): string {
+  if (!src) return '';
+  const bits: string[] = [];
+  const push = (k: string, v: string) => {
+    const t = v.trim();
+    if (t) bits.push(`${k}=${t}`);
+  };
+  push('subtotal', src.subtotal);
+  push('tax', src.tax);
+  push('tip', src.tip);
+  push('paid', src.paidTotal);
+  const p = src.tipPct.trim().replace(/%$/, '');
+  if (p) bits.push(`tipPct=${p}%`);
+  if (tipBase) bits.push(`base=${tipBase}`);
+  return bits.length ? '[receipt math] ' + bits.join(' · ') : '';
+}
+
+/* ------------------------------------------------------------------ page */
+
+function SubmitInner() {
+  const searchParams = useSearchParams();
+  const [track, setTrack] = useState<Track | null>(null);
+  const [preselect, setPreselect] = useState<PreselectVenue | null>(null);
+  const [autoStep, setAutoStep] = useState<1 | 2 | 3 | 4>(1);
+  const [manualStep, setManualStep] = useState<1 | 2>(1);
   const [items, setItems] = useState<EvidenceItem[]>([]);
   const [uploading, setUploading] = useState<EvidenceKind | null>(null);
   const [step1Error, setStep1Error] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [done, setDone] = useState(false);
-  // Opened right after a photo is picked: the user redacts on-device first,
-  // and only the redacted+compressed export is uploaded (never the original).
   const [editing, setEditing] = useState<{ kind: EvidenceKind; file: File } | null>(null);
+  const [extractNumbers, setExtractNumbers] = useState<ConfirmedNumbers | null>(null);
+  const [manual, setManual] = useState<ManualNums>({ ...EMPTY_MANUAL });
+  const [done, setDone] = useState(false);
+
+  // ?venueId= preselect (directory "be the first to report" CTA).
+  useEffect(() => {
+    const id = searchParams.get('venueId');
+    if (!id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/venues/' + encodeURIComponent(id));
+        const data = await res.json();
+        if (cancelled) return;
+        if (res.ok && data.ok && data.venue) {
+          const v = data.venue;
+          setPreselect({
+            id: String(v.id ?? id),
+            name: String(v.name ?? ''),
+            city: String(v.city ?? ''),
+            area: String(v.area ?? ''),
+            address: String(v.address ?? ''),
+            category: String(v.category ?? ''),
+          });
+        }
+      } catch {
+        // No preselect on errors — the picker falls back to search/manual.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams]);
 
   const patchItem = (id: string, patch: Partial<EvidenceItem>) =>
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)));
@@ -477,6 +1343,9 @@ export default function SubmitPage() {
           draft: draftFromParsed(ev.parsed as SiblingParsed | null | undefined),
           error: '',
           confirming: false,
+          // Stash the redacted export: the extract step sends these same bytes
+          // to /api/receipt/extract. The original photo never leaves the device.
+          redactedFile: file,
         },
       ]);
     } catch {
@@ -556,44 +1425,33 @@ export default function SubmitPage() {
   }
 
   const unconfirmed = items.filter((it) => !it.confirmed);
+  const confirmedIds = items.filter((it) => it.confirmed).map((it) => it.id);
 
-  function goStep2() {
-    if (items.length > 0) setStep(2);
-    else setStep(3);
-  }
+  const confirmedWithFile = items.filter((it) => it.confirmed && it.redactedFile);
+  const extractTarget =
+    confirmedWithFile.find((it) => it.type === 'receipt') ?? confirmedWithFile[0] ?? null;
+  const ocrMerchant =
+    extractTarget?.draft.merchant ??
+    items.map((it) => it.draft.merchant).find((m) => m.trim()) ??
+    '';
 
-  async function onSubmitFacts(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    setError('');
-    setSubmitting(true);
-    try {
-      const form = e.currentTarget;
-      const body = new FormData(form);
-      body.set('evidenceIds', JSON.stringify(items.filter((it) => it.confirmed).map((it) => it.id)));
-      const res = await fetch('/api/submissions', { method: 'POST', body });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        setError(data.error || 'Something went wrong. Please try again.');
-      } else {
-        setDone(true);
-        window.scrollTo(0, 0);
-      }
-    } catch {
-      setError('Network error. Please try again.');
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  // OCR merchant prefill + VLM venue proposal are separate prefill sources.
+  const merchants = Array.from(
+    new Set([...items.map((it) => it.draft.merchant), extractNumbers?.venue ?? '']),
+  ).filter((m) => m.trim());
 
   function resetAll() {
-    setStep(1);
+    setTrack(null);
+    setAutoStep(1);
+    setManualStep(1);
     setItems([]);
-    setError('');
     setStep1Error('');
+    setExtractNumbers(null);
+    setManual({ ...EMPTY_MANUAL });
     setDone(false);
   }
 
-  // ---------------------------------------------------------- done (step 4)
+  /* ---------------------------------------------------------- done screen */
   if (done) {
     return (
       <div>
@@ -615,15 +1473,286 @@ export default function SubmitPage() {
     );
   }
 
+  /* ------------------------------------------------- auto: step 1 evidence */
+  function renderEvidenceStep() {
+    return (
+      <div className="form-card">
+        {step1Error && <div className="form-error">{step1Error}</div>}
+
+        <p className="hint" style={{ marginTop: 0 }}>
+          You&apos;ll black out private details yourself right after picking a photo —
+          the original never leaves your device. Then the review step checks the redacted
+          version — nothing publishes until you confirm it. Please no staff faces.
+        </p>
+
+        {(['receipt', 'screen'] as EvidenceKind[]).map((kind) => (
+          <div className="field" key={kind}>
+            <span className="field-label">
+              {kind === 'receipt' ? 'Receipt photo' : 'Tip-screen photo'}
+            </span>
+            <label className="btn btn-secondary">
+              {uploading === kind ? 'Uploading…' : 'Choose photo'}
+              <input
+                type="file"
+                accept="image/*"
+                hidden
+                disabled={uploading !== null}
+                onChange={(e) => onFile(kind, e.target)}
+              />
+            </label>
+          </div>
+        ))}
+
+        {items.length > 0 && (
+          <div className="field">
+            <span className="field-label">Added photos ({items.length})</span>
+            {items.map((it) => (
+              <div key={it.id} className="fact-row" style={{ alignItems: 'center' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  {it.redactedUrl ? (
+                    <img
+                      src={it.redactedUrl}
+                      alt={`${KIND_LABEL[it.type]} (redacted preview)`}
+                      style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6 }}
+                    />
+                  ) : (
+                    <span className="unverified-chip">queued</span>
+                  )}
+                  <div>
+                    <div>{KIND_LABEL[it.type]}</div>
+                    <p className="hint" style={{ margin: 0 }}>
+                      {it.redactedUrl
+                        ? `redacted preview ready · ${it.redactionStatus}`
+                        : 'redaction in progress — preview will appear shortly'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => removeItem(it.id)}
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="btn-row" style={{ marginTop: 16 }}>
+          <button type="button" className="btn btn-secondary" onClick={() => setTrack(null)}>
+            Switch track
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => setAutoStep(items.length > 0 ? 2 : 4)}
+          >
+            {items.length > 0 ? 'Continue to review' : 'Continue without photos'}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ------------------------------------------- auto: step 2 review & confirm */
+  function renderReviewStep() {
+    return (
+      <div>
+        {items.map((it, idx) => (
+          <div className="form-card" key={it.id} style={{ marginBottom: 16 }}>
+            <h2 style={{ fontSize: 18, marginTop: 0 }}>
+              {KIND_LABEL[it.type]} ({idx + 1} of {items.length})
+            </h2>
+
+            {it.confirmed ? (
+              <div className="form-success">
+                <p style={{ margin: 0 }}>
+                  <strong>Confirmed.</strong> This photo&apos;s redacted version is approved
+                  for the report.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="photo-compare">
+                  <div>
+                    <span className="photo-tag">Only you see this</span>
+                    <p className="field-label">Original</p>
+                    <img
+                      src={`/api/evidence/${it.id}/original`}
+                      alt={`${KIND_LABEL[it.type]} original`}
+                    />
+                  </div>
+                  <div>
+                    <span className="photo-tag">This is what publishes</span>
+                    <p className="field-label">Redacted</p>
+                    {it.redactedUrl ? (
+                      <img
+                        src={it.redactedUrl}
+                        alt={`${KIND_LABEL[it.type]} redacted`}
+                      />
+                    ) : (
+                      <p className="hint">
+                        Redacted version not available yet — review the original carefully.
+                        Confirming will also cover the redacted copy once it&apos;s ready.
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {it.error && <div className="form-error">{it.error}</div>}
+
+                <div className="field" style={{ marginTop: 12 }}>
+                  <span className="field-label">
+                    Check the numbers — fix anything the scan got wrong
+                  </span>
+                  <div className="field">
+                    <label className="field-label" htmlFor={`merchant-${it.id}`}>
+                      Merchant
+                    </label>
+                    <input
+                      type="text"
+                      id={`merchant-${it.id}`}
+                      value={it.draft.merchant}
+                      maxLength={120}
+                      onChange={(e) =>
+                        patchItem(it.id, { draft: { ...it.draft, merchant: e.target.value } })
+                      }
+                    />
+                  </div>
+                  {(
+                    [
+                      ['subtotal', 'Subtotal'],
+                      ['tax', 'Tax'],
+                      ['tip', 'Tip'],
+                      ['total', 'Total'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <div className="field" key={key}>
+                      <label className="field-label" htmlFor={`${key}-${it.id}`}>
+                        {label}
+                      </label>
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        id={`${key}-${it.id}`}
+                        value={it.draft[key]}
+                        maxLength={20}
+                        onChange={(e) =>
+                          patchItem(it.id, { draft: { ...it.draft, [key]: e.target.value } })
+                        }
+                      />
+                    </div>
+                  ))}
+                  <div className="field">
+                    <label className="field-label" htmlFor={`presets-${it.id}`}>
+                      Tip presets shown
+                    </label>
+                    <input
+                      type="text"
+                      id={`presets-${it.id}`}
+                      value={it.draft.presets}
+                      placeholder="e.g. 20, 25, 30"
+                      maxLength={60}
+                      onChange={(e) =>
+                        patchItem(it.id, { draft: { ...it.draft, presets: e.target.value } })
+                      }
+                    />
+                  </div>
+                  <div className="field">
+                    <label className="field-label" htmlFor={`fees-${it.id}`}>
+                      Fees on the receipt
+                    </label>
+                    <input
+                      type="text"
+                      id={`fees-${it.id}`}
+                      value={it.draft.fees}
+                      placeholder="e.g. service charge, card surcharge"
+                      maxLength={120}
+                      onChange={(e) =>
+                        patchItem(it.id, { draft: { ...it.draft, fees: e.target.value } })
+                      }
+                    />
+                  </div>
+                </div>
+
+                {!it.ocrAvailable && (
+                  <div className="field">
+                    <p className="hint">
+                      <strong>
+                        Automatic redaction isn&apos;t available here — please cover card
+                        numbers, names, and barcodes in your photo before uploading.
+                      </strong>
+                    </p>
+                    <label className="checkbox-option">
+                      <input
+                        type="checkbox"
+                        checked={it.attested}
+                        onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
+                      />
+                      I checked this photo for personal info (card numbers, auth codes, contact
+                      info, barcodes)
+                    </label>
+                  </div>
+                )}
+                {!it.redactedUrl && it.ocrAvailable && (
+                  <div className="field">
+                    <label className="checkbox-option">
+                      <input
+                        type="checkbox"
+                        checked={it.attested}
+                        onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
+                      />
+                      I checked this photo for personal info (card numbers, auth codes, contact
+                      info, barcodes)
+                    </label>
+                  </div>
+                )}
+
+                <button
+                  type="button"
+                  className="submit-btn"
+                  disabled={it.confirming}
+                  onClick={() => confirmItem(it)}
+                >
+                  {it.confirming ? 'Confirming…' : 'Confirm this photo'}
+                </button>
+              </>
+            )}
+          </div>
+        ))}
+
+        {unconfirmed.length > 0 && (
+          <div className="form-error">
+            Still unconfirmed: {unconfirmed.map((it) => KIND_LABEL[it.type]).join(', ')}. Photos
+            aren&apos;t attached until you confirm each one above.
+          </div>
+        )}
+
+        <div className="btn-row" style={{ marginTop: 16 }}>
+          <button type="button" className="btn btn-secondary" onClick={() => setAutoStep(1)}>
+            Back
+          </button>
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={unconfirmed.length > 0}
+            onClick={() => setAutoStep(3)}
+          >
+            Read my receipt
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const AUTO_LABELS = ['Proof', 'Redaction check', 'Receipt read', 'The facts'];
+  const MANUAL_LABELS = ['Numbers', 'The facts'];
+
   return (
     <div>
       <p className="eyebrow">Log a report</p>
       <h1 className="page-title">Caught one in the wild?</h1>
-      <p className="page-sub">
-        Snap the receipt, check our redaction, log the facts. Takes 60 seconds. No account
-        needed — and nothing publishes until you confirm the redacted version.
-      </p>
-      <Stepper step={step} />
 
       {/* on-device redaction editor: picked photo -> user blacks out PII ->
           only the redacted+compressed export is uploaded */}
@@ -640,444 +1769,114 @@ export default function SubmitPage() {
         />
       )}
 
-      {/* ------------------------------------------------- step 1: evidence */}
-      {step === 1 && (
-        <div className="form-card">
-          {step1Error && <div className="form-error">{step1Error}</div>}
-
-          <p className="hint" style={{ marginTop: 0 }}>
-            You&apos;ll black out private details yourself right after picking a photo —
-            the original never leaves your device. Then step 2 reviews the redacted
-            version — nothing publishes until you confirm it. Please no staff faces.
+      {track === null && (
+        <>
+          <p className="page-sub">
+            Snap the receipt or type the numbers — takes 60 seconds. No account needed.
           </p>
-
-          {(['receipt', 'screen'] as EvidenceKind[]).map((kind) => (
-            <div className="field" key={kind}>
-              <span className="field-label">
-                {kind === 'receipt' ? 'Receipt photo' : 'Tip-screen photo'}
-              </span>
-              <label className="btn btn-secondary">
-                {uploading === kind ? 'Uploading…' : 'Choose photo'}
-                <input
-                  type="file"
-                  accept="image/*"
-                  hidden
-                  disabled={uploading !== null}
-                  onChange={(e) => onFile(kind, e.target)}
-                />
-              </label>
-            </div>
-          ))}
-
-          {items.length > 0 && (
-            <div className="field">
-              <span className="field-label">Added photos ({items.length})</span>
-              {items.map((it) => (
-                <div key={it.id} className="fact-row" style={{ alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                    {it.redactedUrl ? (
-                      <img
-                        src={it.redactedUrl}
-                        alt={`${KIND_LABEL[it.type]} (redacted preview)`}
-                        style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6 }}
-                      />
-                    ) : (
-                      <span className="unverified-chip">queued</span>
-                    )}
-                    <div>
-                      <div>{KIND_LABEL[it.type]}</div>
-                      <p className="hint" style={{ margin: 0 }}>
-                        {it.redactedUrl
-                          ? `redacted preview ready · ${it.redactionStatus}`
-                          : 'redaction in progress — preview will appear shortly'}
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    className="btn btn-secondary"
-                    onClick={() => removeItem(it.id)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="btn-row" style={{ marginTop: 16 }}>
-            <button type="button" className="btn btn-primary" onClick={goStep2}>
-              {items.length > 0 ? 'Continue to review' : 'Continue without photos'}
-            </button>
-          </div>
-        </div>
+          <TrackChooser preselect={preselect} onPick={(t) => setTrack(t)} />
+        </>
       )}
 
-      {/* -------------------------------------------- step 2: review & confirm */}
-      {step === 2 && (
-        <div>
-          {items.map((it, idx) => (
-            <div className="form-card" key={it.id} style={{ marginBottom: 16 }}>
-              <h2 style={{ fontSize: 18, marginTop: 0 }}>
-                {KIND_LABEL[it.type]} ({idx + 1} of {items.length})
-              </h2>
-
-              {it.confirmed ? (
-                <div className="form-success">
-                  <p style={{ margin: 0 }}>
-                    <strong>Confirmed.</strong> This photo&apos;s redacted version is approved
-                    for the report.
-                  </p>
-                </div>
-              ) : (
-                <>
-                  <div className="photo-compare">
-                    <div>
-                      <span className="photo-tag">Only you see this</span>
-                      <p className="field-label">Original</p>
-                      <img
-                        src={`/api/evidence/${it.id}/original`}
-                        alt={`${KIND_LABEL[it.type]} original`}
-                      />
-                    </div>
-                    <div>
-                      <span className="photo-tag">This is what publishes</span>
-                      <p className="field-label">Redacted</p>
-                      {it.redactedUrl ? (
-                        <img
-                          src={it.redactedUrl}
-                          alt={`${KIND_LABEL[it.type]} redacted`}
-                        />
-                      ) : (
-                        <p className="hint">
-                          Redacted version not available yet — review the original carefully.
-                          Confirming will also cover the redacted copy once it&apos;s ready.
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  {it.error && <div className="form-error">{it.error}</div>}
-
-                  <div className="field" style={{ marginTop: 12 }}>
-                    <span className="field-label">
-                      Check the numbers — fix anything the scan got wrong
-                    </span>
-                    <div className="field">
-                      <label className="field-label" htmlFor={`merchant-${it.id}`}>
-                        Merchant
-                      </label>
-                      <input
-                        type="text"
-                        id={`merchant-${it.id}`}
-                        value={it.draft.merchant}
-                        maxLength={120}
-                        onChange={(e) =>
-                          patchItem(it.id, { draft: { ...it.draft, merchant: e.target.value } })
-                        }
-                      />
-                    </div>
-                    {(
-                      [
-                        ['subtotal', 'Subtotal'],
-                        ['tax', 'Tax'],
-                        ['tip', 'Tip'],
-                        ['total', 'Total'],
-                      ] as const
-                    ).map(([key, label]) => (
-                      <div className="field" key={key}>
-                        <label className="field-label" htmlFor={`${key}-${it.id}`}>
-                          {label}
-                        </label>
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          id={`${key}-${it.id}`}
-                          value={it.draft[key]}
-                          maxLength={20}
-                          onChange={(e) =>
-                            patchItem(it.id, { draft: { ...it.draft, [key]: e.target.value } })
-                          }
-                        />
-                      </div>
-                    ))}
-                    <div className="field">
-                      <label className="field-label" htmlFor={`presets-${it.id}`}>
-                        Tip presets shown
-                      </label>
-                      <input
-                        type="text"
-                        id={`presets-${it.id}`}
-                        value={it.draft.presets}
-                        placeholder="e.g. 20, 25, 30"
-                        maxLength={60}
-                        onChange={(e) =>
-                          patchItem(it.id, { draft: { ...it.draft, presets: e.target.value } })
-                        }
-                      />
-                    </div>
-                    <div className="field">
-                      <label className="field-label" htmlFor={`fees-${it.id}`}>
-                        Fees on the receipt
-                      </label>
-                      <input
-                        type="text"
-                        id={`fees-${it.id}`}
-                        value={it.draft.fees}
-                        placeholder="e.g. service charge, card surcharge"
-                        maxLength={120}
-                        onChange={(e) =>
-                          patchItem(it.id, { draft: { ...it.draft, fees: e.target.value } })
-                        }
-                      />
-                    </div>
-                  </div>
-
-                  {!it.ocrAvailable && (
-                    <div className="field">
-                      <p className="hint">
-                        <strong>
-                          Automatic redaction isn&apos;t available here — please cover card
-                          numbers, names, and barcodes in your photo before uploading.
-                        </strong>
-                      </p>
-                      <label className="checkbox-option">
-                        <input
-                          type="checkbox"
-                          checked={it.attested}
-                          onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
-                        />
-                        I checked this photo for personal info (card numbers, auth codes, contact
-                        info, barcodes)
-                      </label>
-                    </div>
-                  )}
-                  {!it.redactedUrl && it.ocrAvailable && (
-                    <div className="field">
-                      <label className="checkbox-option">
-                        <input
-                          type="checkbox"
-                          checked={it.attested}
-                          onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
-                        />
-                        I checked this photo for personal info (card numbers, auth codes, contact
-                        info, barcodes)
-                      </label>
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    className="submit-btn"
-                    disabled={it.confirming}
-                    onClick={() => confirmItem(it)}
-                  >
-                    {it.confirming ? 'Confirming…' : 'Confirm this photo'}
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
-
-          {unconfirmed.length > 0 && (
-            <div className="form-error">
-              Still unconfirmed: {unconfirmed.map((it) => KIND_LABEL[it.type]).join(', ')}. Photos
-              aren&apos;t attached until you confirm each one above.
-            </div>
-          )}
-
-          <div className="btn-row" style={{ marginTop: 16 }}>
-            <button type="button" className="btn btn-secondary" onClick={() => setStep(1)}>
-              Back
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              disabled={unconfirmed.length > 0}
-              onClick={() => setStep(3)}
-            >
-              Continue to the facts
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* --------------------------------------------------- step 3: the facts */}
-      {step === 3 && (
-        <form className="form-card" onSubmit={onSubmitFacts}>
-          {/* Honeypot anti-spam field: invisible to humans */}
-          <input
-            type="text"
-            name="website"
-            className="honeypot"
-            tabIndex={-1}
-            autoComplete="off"
-            aria-hidden="true"
-          />
-
-          {error && <div className="form-error">{error}</div>}
-
-          <p className="hint" style={{ marginTop: 0 }}>
-            {items.length > 0
-              ? `Evidence attached: ${items.length} confirmed photo${items.length > 1 ? 's' : ''}.`
-              : 'No photos attached.'}{' '}
-            Objective facts only — they feed the score.
+      {track === 'auto' && (
+        <>
+          <p className="page-sub">
+            Snap the receipt, check our redaction, confirm the numbers, log the facts.
           </p>
-
-          <VenuePicker merchants={items.map((it) => it.draft.merchant)} />
-
-          <div className="field">
-            <span className="field-label">
-              Service type <span className="required-mark">*</span>
-            </span>
-            <div className="radio-group">
-              {[
-                ['counter', 'Counter service'],
-                ['table', 'Table service'],
-                ['takeout', 'Takeout / pickup'],
-                ['nonfood', 'Non-food retail'],
-              ].map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input type="radio" name="serviceType" value={val} required />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Tip-screen presentation</span>
-            <div className="radio-group">
-              {[
-                ['staff-held', 'Staff held the screen facing me while I chose'],
-                ['handed-over', 'Screen handed to me or left on the counter'],
-                ['no-screen', 'No tip screen — no tip prompt at all'],
-                ['not-sure', 'Not sure'],
-              ].map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input type="radio" name="screenPresentation" value={val} />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="presets">
-              What the tip screen showed
-            </label>
-            <input
-              type="text"
-              id="presets"
-              name="presets"
-              placeholder="e.g. 20%, 25%, 30%"
-              maxLength={120}
+          <Stepper labels={AUTO_LABELS} step={autoStep} />
+          {autoStep === 1 && renderEvidenceStep()}
+          {autoStep === 2 && renderReviewStep()}
+          {autoStep === 3 && (
+            <ExtractStep
+              file={extractTarget?.redactedFile ?? null}
+              ocrMerchant={ocrMerchant}
+              onDone={(n) => {
+                setExtractNumbers(n);
+                setAutoStep(4);
+              }}
+              onBack={() => setAutoStep(2)}
             />
-          </div>
+          )}
+          {autoStep === 4 && (
+            <FactsForm
+              track="auto"
+              merchants={merchants}
+              preselect={preselect}
+              confirmedCount={confirmedIds.length}
+              prefillPresets={extractNumbers?.presets ?? ''}
+              prefillTipBase={extractNumbers?.taxBase ?? ''}
+              showFees
+              manualFees={[]}
+              buildFactsLine={(tipBase) => buildFactsLine(extractNumbers, tipBase)}
+              confirmedIds={confirmedIds}
+              onBack={() => setAutoStep(items.length > 0 ? 3 : 1)}
+              onSubmitted={() => setDone(true)}
+            />
+          )}
+        </>
+      )}
 
-          <div className="field">
-            <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
-            <div className="radio-group">
-              {[
-                ['pre-tax', 'Pre-tax subtotal'],
-                ['post-tax', 'Post-tax total'],
-                ['not-sure', 'Not sure'],
-              ].map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input type="radio" name="tipBase" value={val} />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span className="field-label">Any extra fees?</span>
-            <div className="checkbox-group">
-              {[
-                ['service-charge', 'Service charge'],
-                ['card-surcharge', 'Credit-card surcharge'],
-                ['none', 'None'],
-                ['other', 'Other'],
-              ].map(([val, label]) => (
-                <label key={val} className="checkbox-option">
-                  <input type="checkbox" name="fees" value={val} />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span className="field-label">
-              Was it easy to choose a custom tip or no tip? (e.g. a clear custom/zero option,
-              not buried or guilt-tripped)
-            </span>
-            <div className="radio-group">
-              {[
-                ['yes', 'Yes, easy'],
-                ['no', 'No, hard or missing'],
-                ['skip', 'Skip'],
-              ].map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input type="radio" name="easyOptOut" value={val} />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <span className="field-label">
-              Did you feel pressured while choosing your tip? (e.g. staff watching you select)
-            </span>
-            <div className="radio-group">
-              {[
-                ['yes', 'Yes'],
-                ['no', 'No'],
-                ['skip', 'Skip'],
-              ].map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input type="radio" name="guilt" value={val} />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="experienceNote">
-              How it felt
-            </label>
-            <textarea id="experienceNote" name="experienceNote" maxLength={1000} />
-            <p className="hint">
-              How it felt — shown in a separate subjective section, never affects the score. No
-              staff names.
-            </p>
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="notes">
-              Anything else
-            </label>
-            <textarea id="notes" name="notes" maxLength={1000} />
-            <p className="hint">Suggestions, feedback, anything we missed.</p>
-          </div>
-
-          <div className="btn-row">
-            <button
-              type="button"
-              className="btn btn-secondary"
-              onClick={() => setStep(items.length > 0 ? 2 : 1)}
-            >
-              Back
-            </button>
-            <button type="submit" className="submit-btn" disabled={submitting}>
-              {submitting ? 'Submitting…' : 'Submit report'}
-            </button>
-          </div>
-        </form>
+      {track === 'manual' && (
+        <>
+          <p className="page-sub">
+            Type the numbers off the receipt — the app does the math. No account needed.
+          </p>
+          <Stepper labels={MANUAL_LABELS} step={manualStep} />
+          {manualStep === 1 && (
+            <ManualNumbersStep
+              initial={manual}
+              onContinue={(m) => {
+                setManual(m);
+                setManualStep(2);
+              }}
+              onBack={() => setTrack(null)}
+            />
+          )}
+          {manualStep === 2 && (
+            <FactsForm
+              track="manual"
+              merchants={[]}
+              preselect={preselect}
+              confirmedCount={0}
+              prefillPresets=""
+              prefillTipBase={manual.base === 'not-sure' ? '' : manual.base}
+              showFees={false}
+              manualFees={manual.fees}
+              buildFactsLine={(tipBase) => {
+                const pct = tipPercentOf(numOrNull(manual.tip), numOrNull(manual.subtotal));
+                return buildFactsLine(
+                  {
+                    subtotal: manual.subtotal,
+                    tax: manual.tax,
+                    tip: manual.tip,
+                    paidTotal: '',
+                    tipPct: pct == null ? '' : String(Math.round(pct * 10) / 10),
+                  },
+                  tipBase,
+                );
+              }}
+              confirmedIds={[]}
+              onBack={() => setManualStep(1)}
+              onSubmitted={() => setDone(true)}
+            />
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+export default function SubmitPage() {
+  return (
+    <Suspense
+      fallback={
+        <div>
+          <p className="eyebrow">Log a report</p>
+          <h1 className="page-title">Caught one in the wild?</h1>
+        </div>
+      }
+    >
+      <SubmitInner />
+    </Suspense>
   );
 }

@@ -49,6 +49,19 @@ export interface VenueCard {
   approvedCount: number;
   unverifiedCount: number; // approved but zero confirmed evidence
   lastUpdated: string; // ISO
+  /** Per-venue summary facts powering the directory row (PRD R.4). */
+  facts: DirectoryFacts;
+}
+
+/**
+ * Evidence-backed (with consensus fallback for service type) summary facts
+ * for one venue's directory row: minimum decent tip, tip base, fees.
+ */
+export interface DirectoryFacts {
+  minPreset: number | null; // lowest evidence-backed preset observed
+  tipBase: TipBase | '';
+  fees: string[]; // canonical fee keys
+  serviceType: ServiceType | '';
 }
 
 /** Extract percentage numbers from free text like "20%, 25%, 30%". */
@@ -383,12 +396,23 @@ export function summarizeVenues(
     const unverifiedCount = rs.filter((r) => !hasConfirmedEvidence(r, evidenceById)).length;
     const lastUpdated =
       rs.length > 0 ? rs[rs.length - 1].createdAt : venue.createdAt;
+    // Backed facts for the directory row; service type falls back to community
+    // consensus when no screen evidence backs it yet (same rule the directory
+    // service filter used to compute on its own).
+    const backed = aggregateBackedFacts(rs, evidenceById);
+    const facts: DirectoryFacts = {
+      minPreset: backed.minPreset,
+      tipBase: backed.tipBase,
+      fees: backed.fees,
+      serviceType: backed.serviceType || aggregateConsensus(rs).serviceType,
+    };
     return {
       venue,
       score: computeVenueScore(rs, evidenceById),
       approvedCount: rs.length,
       unverifiedCount,
       lastUpdated,
+      facts,
     };
   });
 }
