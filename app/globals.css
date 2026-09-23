@@ -1337,3 +1337,20 @@ p {
     width: 100%;
   }
 }
+
+/* Loading spinner (e.g. receipt reading state) */
+.spinner {
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border: 3px solid var(--line);
+  border-top-color: var(--red);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

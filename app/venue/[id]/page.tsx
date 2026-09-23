@@ -27,6 +27,16 @@ function fmtPct(n: number): string {
   return Number.isInteger(n) ? n + '%' : n.toFixed(1) + '%';
 }
 
+/** The machine-readable "[receipt math]" line rides in notes for moderators —
+ *  keep it out of the public report display. */
+function publicNotes(notes: string): string {
+  return notes
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('[receipt math]'))
+    .join('\n')
+    .trim();
+}
+
 function labelOf(term: string, value: string): string {
   if (term === 'Service type') return SERVICE_TYPE_LABELS[value] ?? value;
   if (term === 'Tip calculated on') return TIP_BASE_LABELS[value] ?? value;
@@ -439,7 +449,7 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
                 <span className="unverified-chip">Unverified</span>
               </div>
               <div className="venue-facts">
-                {r.presets && <span className="fact-chip">Presets: {r.presets}</span>}
+                {r.presets && <span className="fact-chip">Lowest tip: {r.presets}</span>}
                 {r.tipBase && TIP_BASE_LABELS[r.tipBase] && (
                   <span className="fact-chip">{TIP_BASE_LABELS[r.tipBase]}</span>
                 )}
@@ -452,7 +462,9 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
                   </span>
                 ))}
               </div>
-              {r.notes && <p style={{ margin: '8px 0 0' }}>{r.notes}</p>}
+              {publicNotes(r.notes) && (
+                <p style={{ margin: '8px 0 0' }}>{publicNotes(r.notes)}</p>
+              )}
             </div>
           ))}
         </div>
