@@ -584,7 +584,9 @@ export default function RedactionCanvas({
       style={{
         position: 'fixed',
         inset: 0,
-        zIndex: 200,
+        // Above the app's bottom nav (z-index 1000): this is a modal, so it
+        // must cover all app chrome, including its toolbar at the bottom.
+        zIndex: 2000,
         display: 'flex',
         flexDirection: 'column',
         background: 'var(--bg)',
