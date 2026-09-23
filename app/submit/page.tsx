@@ -588,6 +588,10 @@ interface ManualNums {
   subtotal: string;
   tax: string;
   tip: string;
+  /** Edited on the review page (not asked on the numbers step). */
+  paidTotal: string;
+  /** Tip % override — empty means "show the live-computed %". */
+  tipPct: string;
   fees: string[];
   base: 'pre-tax' | 'post-tax' | 'not-sure';
   /** True once the user explicitly picked a base — the live guess stops overriding it. */
@@ -598,6 +602,8 @@ const EMPTY_MANUAL: ManualNums = {
   subtotal: '',
   tax: '',
   tip: '',
+  paidTotal: '',
+  tipPct: '',
   fees: [],
   base: 'not-sure',
   baseExplicit: false,
@@ -752,10 +758,182 @@ function ManualNumbersStep({
         <button
           type="button"
           className="btn btn-primary"
-          onClick={() => onContinue({ subtotal, tax, tip, fees, base, baseExplicit: baseLocked })}
+          onClick={() => onContinue({ ...initial, subtotal, tax, tip, fees, base, baseExplicit: baseLocked })}
         >
           Continue
         </button>
+      </div>
+    </div>
+  );
+}
+
+/* -------- shared receipt-values editor (both tracks' final review page).
+
+Subtotal / tax / tip / extra fees / paid total / tip % (pre-tax), editable.
+Auto track pre-fills it from the VLM; manual track pre-fills it from the
+numbers typed on the previous step, so both tracks ask the same questions. */
+
+interface ReceiptValueFields {
+  subtotal: string;
+  tax: string;
+  tip: string;
+  paidTotal: string;
+}
+
+function ReceiptValuesBlock({
+  idPrefix,
+  values,
+  onValuesChange,
+  tipPct,
+  onTipPctChange,
+  fees,
+  onFeesChange,
+  hint,
+  feeHint,
+  emptyFeeHint,
+  renderFeeInputs,
+}: {
+  idPrefix: string;
+  values: ReceiptValueFields;
+  onValuesChange: (v: ReceiptValueFields) => void;
+  /** Kept separate so the manual track can show a live-computed % until the
+      user overrides it. */
+  tipPct: string;
+  onTipPctChange: (v: string) => void;
+  fees: string[];
+  onFeesChange: (f: string[]) => void;
+  /** Hint under the "Receipt values" label. */
+  hint: React.ReactNode;
+  /** Hint under the fee chips. */
+  feeHint: string;
+  /** Shown when no fees are set. */
+  emptyFeeHint: string;
+  /** Auto track posts fees via hidden inputs; manual appends them at submit. */
+  renderFeeInputs: boolean;
+}) {
+  const set =
+    (k: keyof ReceiptValueFields) => (e: React.ChangeEvent<HTMLInputElement>) =>
+      onValuesChange({ ...values, [k]: e.target.value });
+  const activeFees = fees.filter((f) => f !== 'none');
+  return (
+    <div className="field">
+      <span className="field-label">Receipt values — fix anything wrong</span>
+      {hint}
+
+      {(
+        [
+          ['subtotal', 'Subtotal'],
+          ['tax', 'Tax'],
+          ['tip', 'Tip'],
+        ] as const
+      ).map(([key, label]) => (
+        <div className="field" key={key}>
+          <label className="field-label" htmlFor={`${idPrefix}-${key}`}>
+            {label}
+          </label>
+          <input
+            type="text"
+            inputMode="decimal"
+            id={`${idPrefix}-${key}`}
+            value={values[key]}
+            maxLength={20}
+            onChange={set(key)}
+          />
+        </div>
+      ))}
+
+      <div className="field">
+        <span className="field-label">Extra fees</span>
+        {renderFeeInputs &&
+          activeFees.map((v) => <input key={v} type="hidden" name="fees" value={v} />)}
+        <div className="chip-row">
+          {activeFees.map((v) => (
+            <span key={v} className="chip-option">
+              {FEE_LABELS[v] ?? v}
+              <button
+                type="button"
+                aria-label={`Remove ${FEE_LABELS[v] ?? v}`}
+                onClick={() => onFeesChange(fees.filter((f) => f !== v))}
+                style={{
+                  marginLeft: 6,
+                  border: 'none',
+                  background: 'none',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  lineHeight: 1,
+                  color: 'inherit',
+                  padding: '2px 4px',
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+          <select
+            value=""
+            aria-label="Add a fee"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v)
+                onFeesChange(
+                  fees.includes(v) ? fees : [...fees.filter((f) => f !== 'none'), v],
+                );
+            }}
+            style={{
+              padding: '8px 10px',
+              borderRadius: 999,
+              border: '1px dashed var(--line)',
+              background: 'none',
+              color: 'var(--ink)',
+              fontSize: 14,
+              cursor: 'pointer',
+            }}
+          >
+            <option value="">+ Add fee…</option>
+            {FEE_OPTIONS.filter(([v]) => v !== 'none' && !fees.includes(v)).map(
+              ([v, label]) => (
+                <option key={v} value={v}>
+                  {label}
+                </option>
+              ),
+            )}
+          </select>
+        </div>
+        {activeFees.length === 0 && (
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            {emptyFeeHint}
+          </p>
+        )}
+        <p className="hint">{feeHint}</p>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor={`${idPrefix}-paidTotal`}>
+          Paid total
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id={`${idPrefix}-paidTotal`}
+          value={values.paidTotal}
+          maxLength={20}
+          onChange={set('paidTotal')}
+        />
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor={`${idPrefix}-tipPct`}>
+          Tip percentage (pre-tax)
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id={`${idPrefix}-tipPct`}
+          value={tipPct}
+          maxLength={10}
+          placeholder="e.g. 20"
+          onChange={(e) => onTipPctChange(e.target.value)}
+        />
       </div>
     </div>
   );
@@ -949,13 +1127,8 @@ function AutoReviewStep({
   }
 
   const receiptBlock = (
-    <div className="field">
-      <span className="field-label">Receipt values — fix anything wrong</span>
-      {status === 'ready' ? (
-        <p className="hint" style={{ marginTop: 0 }}>
-          Pre-filled from your redacted photo. Nothing publishes until you submit.
-        </p>
-      ) : (
+    <>
+      {status !== 'ready' && (
         <div className="form-error" style={{ marginBottom: 12 }}>
           <p style={{ margin: 0 }}>
             Couldn&apos;t read the receipt automatically — enter the numbers below.
@@ -976,128 +1149,31 @@ function AutoReviewStep({
           </button>
         </div>
       )}
-
-      {(
-        [
-          ['subtotal', 'Subtotal'],
-          ['tax', 'Tax'],
-          ['tip', 'Tip'],
-        ] as const
-      ).map(([key, label]) => (
-        <div className="field" key={key}>
-          <label className="field-label" htmlFor={`ar-${key}`}>
-            {label}
-          </label>
-          <input
-            type="text"
-            inputMode="decimal"
-            id={`ar-${key}`}
-            value={fields[key]}
-            maxLength={20}
-            onChange={(e) => set(key, e.target.value)}
-          />
-        </div>
-      ))}
-
-      <div className="field">
-        <span className="field-label">Extra fees</span>
-        {feeValues
-          .filter((f) => f !== 'none')
-          .map((v) => (
-            <input key={v} type="hidden" name="fees" value={v} />
-          ))}
-        <div className="chip-row">
-          {feeValues
-            .filter((f) => f !== 'none')
-            .map((v) => (
-              <span key={v} className="chip-option">
-                {FEE_LABELS[v] ?? v}
-                <button
-                  type="button"
-                  aria-label={`Remove ${FEE_LABELS[v] ?? v}`}
-                  onClick={() => setFeeValues((prev) => prev.filter((f) => f !== v))}
-                  style={{
-                    marginLeft: 6,
-                    border: 'none',
-                    background: 'none',
-                    cursor: 'pointer',
-                    fontSize: 14,
-                    lineHeight: 1,
-                    color: 'inherit',
-                    padding: '2px 4px',
-                  }}
-                >
-                  ×
-                </button>
-              </span>
-            ))}
-          <select
-            value=""
-            aria-label="Add a fee"
-            onChange={(e) => {
-              const v = e.target.value;
-              if (v)
-                setFeeValues((prev) =>
-                  prev.includes(v) ? prev : [...prev.filter((f) => f !== 'none'), v],
-                );
-            }}
-            style={{
-              padding: '8px 10px',
-              borderRadius: 999,
-              border: '1px dashed var(--line)',
-              background: 'none',
-              color: 'var(--ink)',
-              fontSize: 14,
-              cursor: 'pointer',
-            }}
-          >
-            <option value="">+ Add fee…</option>
-            {FEE_OPTIONS.filter(([v]) => v !== 'none' && !feeValues.includes(v)).map(
-              ([v, label]) => (
-                <option key={v} value={v}>
-                  {label}
-                </option>
-              ),
-            )}
-          </select>
-        </div>
-        {feeValues.filter((f) => f !== 'none').length === 0 && (
-          <p className="hint" style={{ margin: '4px 0 0' }}>
-            None detected on the receipt.
-          </p>
-        )}
-        <p className="hint">Detected on your receipt — fix it if wrong.</p>
-      </div>
-
-      <div className="field">
-        <label className="field-label" htmlFor="ar-paidTotal">
-          Paid total
-        </label>
-        <input
-          type="text"
-          inputMode="decimal"
-          id="ar-paidTotal"
-          value={fields.paidTotal}
-          maxLength={20}
-          onChange={(e) => set('paidTotal', e.target.value)}
-        />
-      </div>
-
-      <div className="field">
-        <label className="field-label" htmlFor="ar-tippct">
-          Tip percentage (pre-tax)
-        </label>
-        <input
-          type="text"
-          inputMode="decimal"
-          id="ar-tippct"
-          value={fields.tipPct}
-          maxLength={10}
-          placeholder="e.g. 20"
-          onChange={(e) => set('tipPct', e.target.value)}
-        />
-      </div>
-    </div>
+      <ReceiptValuesBlock
+        idPrefix="ar"
+        values={{
+          subtotal: fields.subtotal,
+          tax: fields.tax,
+          tip: fields.tip,
+          paidTotal: fields.paidTotal,
+        }}
+        onValuesChange={(v) => setFields((prev) => ({ ...prev, ...v }))}
+        tipPct={fields.tipPct}
+        onTipPctChange={(v) => set('tipPct', v)}
+        fees={feeValues}
+        onFeesChange={setFeeValues}
+        hint={
+          status === 'ready' ? (
+            <p className="hint" style={{ marginTop: 0 }}>
+              Pre-filled from your redacted photo. Nothing publishes until you submit.
+            </p>
+          ) : null
+        }
+        feeHint="Detected on your receipt — fix it if wrong."
+        emptyFeeHint="None detected on the receipt."
+        renderFeeInputs
+      />
+    </>
   );
 
   return (
@@ -1564,6 +1640,13 @@ function SubmitInner() {
   const unconfirmed = items.filter((it) => !it.confirmed);
   const confirmedIds = items.filter((it) => it.confirmed).map((it) => it.id);
 
+  // Manual track: live-computed tip % for the review page. Stays live until
+  // the user overrides the % input, which writes manual.tipPct.
+  const manualComputedPct = (() => {
+    const p = tipPercentOf(numOrNull(manual.tip), numOrNull(manual.subtotal));
+    return p == null ? '' : String(Math.round(p * 10) / 10);
+  })();
+
   // Evidence confirmation is postponed until final submit (AutoReviewStep's
   // prepareEvidence confirms with the PII attestation + corrected values).
   const withFile = items.filter((it) => it.redactedFile);
@@ -1797,19 +1880,50 @@ function SubmitInner() {
               prefillMinTip=""
               prefillTipBase={manual.base === 'not-sure' ? '' : manual.base}
               manualFees={manual.fees}
-              buildFactsLine={(tipBase) => {
-                const pct = tipPercentOf(numOrNull(manual.tip), numOrNull(manual.subtotal));
-                return buildFactsLine(
+              buildFactsLine={(tipBase) =>
+                buildFactsLine(
                   {
                     subtotal: manual.subtotal,
                     tax: manual.tax,
                     tip: manual.tip,
-                    paidTotal: '',
-                    tipPct: pct == null ? '' : String(Math.round(pct * 10) / 10),
+                    paidTotal: manual.paidTotal,
+                    tipPct: manual.tipPct || manualComputedPct,
                   },
                   tipBase,
-                );
-              }}
+                )
+              }
+              receiptBlock={
+                <ReceiptValuesBlock
+                  idPrefix="mr"
+                  values={{
+                    subtotal: manual.subtotal,
+                    tax: manual.tax,
+                    tip: manual.tip,
+                    paidTotal: manual.paidTotal,
+                  }}
+                  onValuesChange={(v) =>
+                    setManual((m) => ({
+                      ...m,
+                      subtotal: v.subtotal,
+                      tax: v.tax,
+                      tip: v.tip,
+                      paidTotal: v.paidTotal,
+                    }))
+                  }
+                  tipPct={manual.tipPct || manualComputedPct}
+                  onTipPctChange={(v) => setManual((m) => ({ ...m, tipPct: v }))}
+                  fees={manual.fees}
+                  onFeesChange={(f) => setManual((m) => ({ ...m, fees: f }))}
+                  hint={
+                    <p className="hint" style={{ marginTop: 0 }}>
+                      From the numbers you typed — fix anything wrong.
+                    </p>
+                  }
+                  feeHint="From the numbers you typed — fix it if wrong."
+                  emptyFeeHint="No extra fees."
+                  renderFeeInputs={false}
+                />
+              }
               confirmedIds={[]}
               onBack={() => setManualStep(1)}
               onSubmitted={() => setDone(true)}
