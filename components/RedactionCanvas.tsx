@@ -11,10 +11,15 @@ import { useEffect, useRef, useState } from 'react';
  * of the edited image; that export is what gets uploaded and stored as the visible
  * (moderation) version. Zero boxes is fine — compression always applies.
  *
- * Gestures (mobile-first):
- *   - one finger: drag to draw a black redaction box; tap a box to select it
- *   - two fingers: pinch to zoom, drag to pan
- *   - mouse: drag to draw, wheel to zoom at cursor
+ * Tools adapt to the input at hand:
+ *   - Draw tool (default): drag to draw a black redaction box; tap/click a box
+ *     to select it.
+ *   - Pan tool: drag to move the zoomed image — one finger on touch, mouse
+ *     drag on desktop. Two-finger pinch always zooms/pans regardless of tool.
+ *   - Desktop extras: mouse wheel zooms at the cursor; holding Space turns any
+ *     drag into a pan; middle-mouse drag pans; Delete removes the selected box;
+ *     Ctrl/Cmd+Z undoes.
+ *   - The hint line under the canvas switches copy for touch vs. mouse pointers.
  * Buttons cover the same actions for accessibility: undo, clear, delete-selected,
  * zoom in/out, reset view, cancel, done. `touch-action: none` on the canvas so the
  * page never scrolls mid-draw.
@@ -110,6 +115,7 @@ export default function RedactionCanvas({
   const pointersRef = useRef(new Map<number, { x: number; y: number }>());
   const gestureRef = useRef<
     | { mode: 'draw'; startImg: { x: number; y: number }; moved: boolean }
+    | { mode: 'pan'; startPx: { x: number; y: number }; view0: View; moved: boolean }
     | { mode: 'pinch'; d0: number; mid0: { x: number; y: number }; view0: View }
     | null
   >(null);
@@ -119,6 +125,20 @@ export default function RedactionCanvas({
   const [boxes, setBoxes] = useState<Box[]>([]);
   const [selected, setSelected] = useState<number | null>(null);
   const [exporting, setExporting] = useState(false);
+  /** Active canvas tool. Touch users get one-finger draw by default (as before)
+   * and can switch to one-finger pan; mouse users get the same toggle plus
+   * space-drag / middle-drag panning. */
+  const [tool, setTool] = useState<'draw' | 'pan'>('draw');
+  const toolRef = useRef<'draw' | 'pan'>('draw');
+  const setToolBoth = (t: 'draw' | 'pan') => {
+    toolRef.current = t;
+    setTool(t);
+  };
+  /** Space held = temporary pan (desktop). */
+  const spaceRef = useRef(false);
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  /** Touch-first vs mouse-first hint copy. */
+  const [coarsePointer, setCoarsePointer] = useState(false);
 
   const setBoxesBoth = (next: Box[]) => {
     boxesRef.current = next;
@@ -303,7 +323,20 @@ export default function RedactionCanvas({
     const pos = canvasPos(e);
     pointersRef.current.set(e.pointerId, pos);
     if (pointersRef.current.size === 1) {
-      gestureRef.current = { mode: 'draw', startImg: toImage(pos.x, pos.y), moved: false };
+      const wantPan =
+        toolRef.current === 'pan' ||
+        spaceRef.current ||
+        (e.pointerType === 'mouse' && e.button === 1);
+      if (wantPan) {
+        gestureRef.current = {
+          mode: 'pan',
+          startPx: pos,
+          view0: { ...viewRef.current },
+          moved: false,
+        };
+      } else {
+        gestureRef.current = { mode: 'draw', startImg: toImage(pos.x, pos.y), moved: false };
+      }
       draftRef.current = null;
     } else if (pointersRef.current.size === 2) {
       const [a, b] = [...pointersRef.current.values()];
@@ -337,6 +370,13 @@ export default function RedactionCanvas({
         draftRef.current = normalizeBox(g.startImg.x, g.startImg.y, cur.x - g.startImg.x, cur.y - g.startImg.y);
         draw();
       }
+    } else if (g.mode === 'pan') {
+      if (Math.hypot(pos.x - g.startPx.x, pos.y - g.startPx.y) > TAP_SLOP) g.moved = true;
+      setView({
+        scale: g.view0.scale,
+        tx: g.view0.tx + (pos.x - g.startPx.x),
+        ty: g.view0.ty + (pos.y - g.startPx.y),
+      });
     } else {
       const [a, b] = [...pointersRef.current.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y) || 1;
@@ -377,6 +417,14 @@ export default function RedactionCanvas({
         }
       }
       draftRef.current = null;
+      gestureRef.current = null;
+      draw();
+    } else if (g.mode === 'pan' && pointersRef.current.size === 0) {
+      if (!g.moved) {
+        // Tap without dragging: select the topmost box under the pointer.
+        const p = toImage(canvasPos(e).x, canvasPos(e).y);
+        setSelectedBoth(hitBox(p.x, p.y));
+      }
       gestureRef.current = null;
       draw();
     } else if (g.mode === 'pinch' && pointersRef.current.size < 2) {
@@ -473,6 +521,46 @@ export default function RedactionCanvas({
     );
   };
 
+  // ---- desktop affordances: pointer type, space-pan, keyboard shortcuts ----
+  useEffect(() => {
+    if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+      setCoarsePointer(window.matchMedia('(pointer: coarse)').matches);
+    }
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spaceRef.current = true;
+        setSpaceHeld(true);
+        e.preventDefault();
+      } else if (e.key === 'Delete' || e.key === 'Backspace') {
+        deleteSelected();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undo();
+      }
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spaceRef.current = false;
+        setSpaceHeld(false);
+      }
+    };
+    // Middle-mouse drag pans; suppress the browser's autoscroll.
+    const onMouseDown = (e: MouseEvent) => {
+      if (e.button === 1) e.preventDefault();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('mousedown', onMouseDown);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('mousedown', onMouseDown);
+      spaceRef.current = false;
+    };
+    // deleteSelected/undo only touch refs + setState, safe to capture once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // ---- render -------------------------------------------------------------
   const toolBtn: React.CSSProperties = {
     padding: '10px 12px',
@@ -562,7 +650,7 @@ export default function RedactionCanvas({
             width: '100%',
             height: '100%',
             touchAction: 'none',
-            cursor: 'crosshair',
+            cursor: tool === 'pan' || spaceHeld ? 'grab' : 'crosshair',
           }}
         />
         {status === 'loading' && (
@@ -613,8 +701,9 @@ export default function RedactionCanvas({
           textAlign: 'center',
         }}
       >
-        Drag to black out names, card numbers, codes · two fingers to zoom &amp; pan · tap a
-        box to select it
+        {coarsePointer
+          ? 'Drag to black out names, card numbers, codes · two fingers to zoom & pan · tap a box to select it'
+          : 'Drag to draw a box · scroll to zoom · hold Space and drag, or switch to Pan, to move around · click a box to select it'}
       </div>
 
       {/* bottom toolbar */}
@@ -628,6 +717,39 @@ export default function RedactionCanvas({
           overflowX: 'auto',
         }}
       >
+        <div
+          role="group"
+          aria-label="Canvas tool"
+          style={{
+            display: 'flex',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            overflow: 'hidden',
+            flexShrink: 0,
+          }}
+        >
+          {(['draw', 'pan'] as const).map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setToolBoth(t)}
+              aria-pressed={tool === t}
+              style={{
+                padding: '10px 12px',
+                fontSize: 14,
+                fontWeight: 700,
+                border: 'none',
+                background: tool === t ? 'var(--ink)' : 'transparent',
+                color: tool === t ? 'var(--bg)' : 'var(--ink)',
+                cursor: 'pointer',
+                touchAction: 'manipulation',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {t === 'draw' ? '✏️ Draw' : '✋ Pan'}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           style={boxes.length === 0 ? toolBtnDisabled : toolBtn}
