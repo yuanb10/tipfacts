@@ -12,12 +12,15 @@ import RedactionCanvas from '@/components/RedactionCanvas';
  *
  *   Step 0 — track chooser: "Auto: snap a receipt" vs "Manual: type the numbers"
  *
- *   AUTO track:  1 evidence (receipt/tip-screen photo) → 2 redaction review &
- *     confirm (on-device RedactionCanvas; the ORIGINAL photo never leaves the
- *     device, only the redacted export is uploaded) → 3 VLM receipt read:
- *     POST /api/receipt/extract receives ONLY the redacted JPEG bytes, and the
- *     user confirms/corrects every proposed value (never auto-published) →
- *     4 the facts → done.
+ *   AUTO track:  1 receipt photo (on-device RedactionCanvas; the ORIGINAL
+ *     photo never leaves the device, only the redacted export is uploaded) →
+ *     2 PII check: user reviews the redacted copy and attests all personal
+ *     info is blacked out (extraction is gated on this) → 3 review & submit:
+ *     POST /api/receipt/extract receives ONLY the redacted JPEG bytes, then
+ *     ONE page shows editable VLM-prefilled values + venue matching + all
+ *     report questions; the user confirms/corrects every value (never
+ *     auto-published), evidence is confirmed with the attestation at submit
+ *     time → done.
  *
  *   MANUAL track: 1 type subtotal / tax / tip / fees; the app computes the tip %
  *     and guesses pre-tax vs post-tax (user confirms) → 2 the facts → done.
@@ -779,14 +782,14 @@ function ManualNumbersStep({
 
 type ExtractStatus = 'reading' | 'ready' | 'fallback';
 
-function numbersFromExtracted(d: ExtractedReceipt, ocrMerchant: string): ConfirmedNumbers {
+function numbersFromExtracted(d: ExtractedReceipt): ConfirmedNumbers {
   const pct =
     d.tipPercentage ??
     (d.tip != null && d.subtotal != null && d.subtotal > 0
       ? (d.tip / d.subtotal) * 100
       : null);
   return {
-    venue: d.venue ?? ocrMerchant ?? '',
+    venue: d.venue ?? '',
     subtotal: numStr(d.subtotal),
     tax: numStr(d.tax),
     tip: numStr(d.tip),
@@ -801,24 +804,39 @@ function numbersFromExtracted(d: ExtractedReceipt, ocrMerchant: string): Confirm
   };
 }
 
-function ExtractStep({
+
+/* --------------------------------- auto: single review & submit page.
+
+Runs VLM extraction on mount (gated on the PII attestation from step 2),
+then renders ONE page: editable pre-filled receipt values, venue matching,
+and all report questions. Confirming evidence is postponed until final
+submit — prepareEvidence confirms with attestedNoPii + corrected parsed
+values right before POSTing /api/submissions. */
+
+function AutoReviewStep({
   file,
-  ocrMerchant,
-  onDone,
+  evidenceId,
+  preselect,
   onBack,
+  onSubmitted,
 }: {
   /** The redacted JPEG — the same bytes already uploaded via /api/evidence. */
   file: File | null;
-  ocrMerchant: string;
-  onDone: (n: ConfirmedNumbers) => void;
+  /** Evidence id to confirm at submit time (null when no photo was uploaded). */
+  evidenceId: string | null;
+  preselect: PreselectVenue | null;
   onBack: () => void;
+  onSubmitted: () => void;
 }) {
   const [status, setStatus] = useState<ExtractStatus>('reading');
-  const [fields, setFields] = useState<ConfirmedNumbers>({ ...EMPTY_NUMBERS, venue: ocrMerchant });
+  const [fields, setFields] = useState<ConfirmedNumbers>(EMPTY_NUMBERS);
+  const [venueHint, setVenueHint] = useState('');
+  const [extractError, setExtractError] = useState('');
   const didRun = useRef(false);
 
   // Call the extraction endpoint ONCE. It receives only the redacted image
-  // bytes — the original photo is never sent anywhere.
+  // bytes — the original photo is never sent anywhere. This only runs after
+  // the user attested (step 2) that all PII is blacked out.
   useEffect(() => {
     if (didRun.current) return;
     didRun.current = true;
@@ -833,18 +851,31 @@ function ExtractStep({
         const res = await fetch('/api/receipt/extract', { method: 'POST', body });
         const data = await res.json().catch(() => null);
         if (res.ok && data && data.ok && data.data) {
-          setFields(numbersFromExtracted(data.data as ExtractedReceipt, ocrMerchant));
+          const extracted = data.data as ExtractedReceipt;
+          setFields(numbersFromExtracted(extracted));
+          setVenueHint(extracted.venue ?? '');
           setStatus('ready');
         } else {
-          // 503 (VLM unavailable) or anything else: friendly inline fallback,
-          // receipt stays attached, user types the numbers instead.
+          const msg =
+            (data && (data.error || data.details)) ||
+            `Receipt reader returned ${res.status}.`;
+          setExtractError(
+            process.env.NODE_ENV === 'development'
+              ? `Extraction failed: ${msg}`
+              : '',
+          );
           setStatus('fallback');
         }
-      } catch {
+      } catch (err) {
+        setExtractError(
+          process.env.NODE_ENV === 'development'
+            ? `Extraction failed: ${err instanceof Error ? err.message : String(err)}`
+            : '',
+        );
         setStatus('fallback');
       }
     })();
-    // file/ocrMerchant are fixed for this mount.
+    // file is fixed for this mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -852,149 +883,220 @@ function ExtractStep({
     setFields((prev) => ({ ...prev, [k]: v }));
   }
 
-  return (
-    <div className="form-card">
-      <h2 style={{ fontSize: 18, marginTop: 0 }}>Check what we read</h2>
+  // Confirm the evidence (attesting no PII + corrected parsed values) right
+  // before the report is submitted.
+  async function prepareEvidence(): Promise<
+    { ids: string[] } | { error: string }
+  > {
+    if (!evidenceId) return { ids: [] };
+    try {
+      const parsed: Partial<ReceiptParsed> = {
+        merchant: venueHint || undefined,
+        subtotal: numOrNull(fields.subtotal),
+        tax: numOrNull(fields.tax),
+        tip: numOrNull(fields.tip),
+        total: numOrNull(fields.paidTotal),
+      };
+      const res = await fetch(`/api/evidence/${evidenceId}/confirm`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ confirmed: true, attestedNoPii: true, parsed }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        return { error: data?.error || 'Could not confirm the receipt photo.' };
+      }
+      return { ids: [evidenceId] };
+    } catch {
+      return { error: 'Network error confirming the receipt photo.' };
+    }
+  }
 
-      {status === 'reading' && (
-        <p className="hint">Reading your receipt… this takes a few seconds.</p>
-      )}
+  function retry() {
+    didRun.current = false;
+    setStatus('reading');
+    setExtractError('');
+    // Re-run the effect by toggling a key-less re-mount trick: easiest is to
+    // just re-invoke via state. We flip didRun and re-run manually.
+    if (!file) {
+      setStatus('fallback');
+      return;
+    }
+    didRun.current = true;
+    (async () => {
+      try {
+        const body = new FormData();
+        body.append('image', file, 'redacted.jpg');
+        const res = await fetch('/api/receipt/extract', { method: 'POST', body });
+        const data = await res.json().catch(() => null);
+        if (res.ok && data && data.ok && data.data) {
+          const extracted = data.data as ExtractedReceipt;
+          setFields(numbersFromExtracted(extracted));
+          setVenueHint(extracted.venue ?? '');
+          setStatus('ready');
+        } else {
+          setStatus('fallback');
+        }
+      } catch {
+        setStatus('fallback');
+      }
+    })();
+  }
 
-      {status === 'fallback' && (
+  if (status === 'reading') {
+    return (
+      <div className="form-card">
+        <h2 style={{ fontSize: 18, marginTop: 0 }}>Reading your receipt</h2>
+        <p className="hint">
+          This takes a few seconds. Only the redacted copy you approved is being
+          read — the original never left your device.
+        </p>
+        <div className="btn-row" style={{ marginTop: 16 }}>
+          <button type="button" className="btn btn-secondary" onClick={onBack}>
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const receiptBlock = (
+    <div className="field">
+      <span className="field-label">Receipt values — fix anything wrong</span>
+      {status === 'ready' ? (
+        <p className="hint" style={{ marginTop: 0 }}>
+          Pre-filled from your redacted photo. Nothing publishes until you submit.
+        </p>
+      ) : (
         <div className="form-error" style={{ marginBottom: 12 }}>
           <p style={{ margin: 0 }}>
             Couldn&apos;t read the receipt automatically — enter the numbers below.
             Your receipt photo stays attached to the report.
           </p>
+          {extractError && (
+            <p className="hint" style={{ margin: '8px 0 0' }}>
+              {extractError}
+            </p>
+          )}
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginTop: 8 }}
+            onClick={retry}
+          >
+            Try reading again
+          </button>
         </div>
       )}
 
-      {status !== 'reading' && (
-        <>
-          {status === 'ready' && (
-            <p className="hint" style={{ marginTop: 0 }}>
-              Here&apos;s what we read from the redacted photo. Fix anything
-              that&apos;s wrong — nothing publishes until you confirm it.
-            </p>
-          )}
+      {(
+        [
+          ['subtotal', 'Subtotal'],
+          ['tax', 'Tax'],
+          ['tip', 'Tip'],
+          ['paidTotal', 'Paid total'],
+        ] as const
+      ).map(([key, label]) => (
+        <div className="field" key={key}>
+          <label className="field-label" htmlFor={`ar-${key}`}>
+            {label}
+          </label>
+          <input
+            type="text"
+            inputMode="decimal"
+            id={`ar-${key}`}
+            value={fields[key]}
+            maxLength={20}
+            onChange={(e) => set(key, e.target.value)}
+          />
+        </div>
+      ))}
 
-          <div className="field">
-            <label className="field-label" htmlFor="x-venue">
-              Venue
-            </label>
-            <input
-              type="text"
-              id="x-venue"
-              value={fields.venue}
-              maxLength={120}
-              onChange={(e) => set('venue', e.target.value)}
-            />
-          </div>
+      <div className="field">
+        <label className="field-label" htmlFor="ar-tippct">
+          Tip percentage
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="ar-tippct"
+          value={fields.tipPct}
+          maxLength={10}
+          placeholder="e.g. 20"
+          onChange={(e) => set('tipPct', e.target.value)}
+        />
+      </div>
 
+      <div className="field">
+        <label className="field-label" htmlFor="ar-presets">
+          Tip presets shown
+        </label>
+        <input
+          type="text"
+          id="ar-presets"
+          value={fields.presets}
+          maxLength={60}
+          placeholder="e.g. 20, 25, 30"
+          onChange={(e) => set('presets', e.target.value)}
+        />
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="ar-fees">
+          Fees on the receipt
+        </label>
+        <input
+          type="text"
+          id="ar-fees"
+          value={fields.fees}
+          maxLength={120}
+          placeholder="e.g. service charge"
+          onChange={(e) => set('fees', e.target.value)}
+        />
+      </div>
+
+      <div className="field">
+        <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
+        <div className="radio-group">
           {(
             [
-              ['subtotal', 'Subtotal'],
-              ['tax', 'Tax'],
-              ['tip', 'Tip'],
-              ['paidTotal', 'Paid total'],
+              ['pre-tax', 'Pre-tax subtotal'],
+              ['post-tax', 'Post-tax total'],
+              ['not-sure', 'Not sure'],
             ] as const
-          ).map(([key, label]) => (
-            <div className="field" key={key}>
-              <label className="field-label" htmlFor={`x-${key}`}>
-                {label}
-              </label>
+          ).map(([val, label]) => (
+            <label key={val} className="radio-option">
               <input
-                type="text"
-                inputMode="decimal"
-                id={`x-${key}`}
-                value={fields[key]}
-                maxLength={20}
-                onChange={(e) => set(key, e.target.value)}
+                type="radio"
+                checked={fields.taxBase === val}
+                onChange={() => set('taxBase', val)}
               />
-            </div>
+              {label}
+            </label>
           ))}
-
-          <div className="field">
-            <label className="field-label" htmlFor="x-tippct">
-              Tip percentage
-            </label>
-            <input
-              type="text"
-              inputMode="decimal"
-              id="x-tippct"
-              value={fields.tipPct}
-              maxLength={10}
-              placeholder="e.g. 20"
-              onChange={(e) => set('tipPct', e.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="x-presets">
-              Tip presets shown
-            </label>
-            <input
-              type="text"
-              id="x-presets"
-              value={fields.presets}
-              maxLength={60}
-              placeholder="e.g. 20, 25, 30"
-              onChange={(e) => set('presets', e.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="x-fees">
-              Fees on the receipt
-            </label>
-            <input
-              type="text"
-              id="x-fees"
-              value={fields.fees}
-              maxLength={120}
-              placeholder="e.g. service charge"
-              onChange={(e) => set('fees', e.target.value)}
-            />
-          </div>
-
-          <div className="field">
-            <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
-            <div className="radio-group">
-              {(
-                [
-                  ['pre-tax', 'Pre-tax subtotal'],
-                  ['post-tax', 'Post-tax total'],
-                  ['not-sure', 'Not sure'],
-                ] as const
-              ).map(([val, label]) => (
-                <label key={val} className="radio-option">
-                  <input
-                    type="radio"
-                    checked={fields.taxBase === val}
-                    onChange={() => set('taxBase', val)}
-                  />
-                  {label}
-                </label>
-              ))}
-            </div>
-          </div>
-        </>
-      )}
-
-      <div className="btn-row" style={{ marginTop: 16 }}>
-        <button type="button" className="btn btn-secondary" onClick={onBack}>
-          Back
-        </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={status === 'reading'}
-          onClick={() => onDone(fields)}
-        >
-          {status === 'reading' ? 'Reading…' : 'These look right — continue'}
-        </button>
+        </div>
       </div>
     </div>
+  );
+
+  return (
+    <FactsForm
+      track="auto"
+      merchants={venueHint ? [venueHint] : []}
+      preselect={preselect}
+      confirmedCount={evidenceId ? 1 : 0}
+      prefillPresets={fields.presets}
+      prefillTipBase={fields.taxBase}
+      showFees
+      manualFees={[]}
+      buildFactsLine={(tipBase) => buildFactsLine(fields, tipBase)}
+      confirmedIds={[]}
+      receiptBlock={receiptBlock}
+      prepareEvidence={prepareEvidence}
+      venueKey={venueHint}
+      onBack={onBack}
+      onSubmitted={onSubmitted}
+    />
   );
 }
 
@@ -1011,6 +1113,9 @@ function FactsForm({
   manualFees,
   buildFactsLine,
   confirmedIds,
+  receiptBlock,
+  prepareEvidence,
+  venueKey,
   onBack,
   onSubmitted,
 }: {
@@ -1024,6 +1129,12 @@ function FactsForm({
   manualFees: string[];
   buildFactsLine: (tipBase: string) => string;
   confirmedIds: string[];
+  /** Auto track: editable VLM-prefilled receipt values, rendered above venue. */
+  receiptBlock?: React.ReactNode;
+  /** Auto track: confirm evidence (PII attested + parsed values) at submit time. */
+  prepareEvidence?: () => Promise<{ ids: string[] } | { error: string }>;
+  /** Auto track: remount VenuePicker when the VLM venue hint arrives. */
+  venueKey?: string;
   onBack: () => void;
   onSubmitted: () => void;
 }) {
@@ -1037,7 +1148,19 @@ function FactsForm({
     try {
       const form = e.currentTarget;
       const body = new FormData(form);
-      body.set('evidenceIds', JSON.stringify(confirmedIds));
+      // Auto track confirms the evidence (with the corrected receipt values)
+      // right before submitting; manual track passes already-confirmed ids.
+      let evidenceIds = confirmedIds;
+      if (prepareEvidence) {
+        const prepared = await prepareEvidence();
+        if ('error' in prepared) {
+          setError(prepared.error);
+          setSubmitting(false);
+          return;
+        }
+        evidenceIds = prepared.ids;
+      }
+      body.set('evidenceIds', JSON.stringify(evidenceIds));
       // Manual track captured fees in the numbers step; auto track uses the
       // checkboxes below.
       if (track === 'manual') manualFees.forEach((f) => body.append('fees', f));
@@ -1083,7 +1206,8 @@ function FactsForm({
         Objective facts only — they feed the score.
       </p>
 
-      <VenuePicker merchants={merchants} preselect={preselect} />
+      <VenuePicker key={venueKey ?? 'manual'} merchants={merchants} preselect={preselect} />
+      {receiptBlock}
 
       <div className="field">
         <span className="field-label">
@@ -1273,13 +1397,13 @@ function SubmitInner() {
   const searchParams = useSearchParams();
   const [track, setTrack] = useState<Track | null>(null);
   const [preselect, setPreselect] = useState<PreselectVenue | null>(null);
-  const [autoStep, setAutoStep] = useState<1 | 2 | 3 | 4>(1);
+  const [autoStep, setAutoStep] = useState<1 | 2 | 3>(1);
   const [manualStep, setManualStep] = useState<1 | 2>(1);
   const [items, setItems] = useState<EvidenceItem[]>([]);
   const [uploading, setUploading] = useState<EvidenceKind | null>(null);
   const [step1Error, setStep1Error] = useState('');
   const [editing, setEditing] = useState<{ kind: EvidenceKind; file: File } | null>(null);
-  const [extractNumbers, setExtractNumbers] = useState<ConfirmedNumbers | null>(null);
+  const [piiAttested, setPiiAttested] = useState(false);
   const [manual, setManual] = useState<ManualNums>({ ...EMPTY_MANUAL });
   const [done, setDone] = useState(false);
 
@@ -1366,79 +1490,15 @@ function SubmitInner() {
     setItems((prev) => prev.filter((it) => it.id !== id));
   }
 
-  async function confirmItem(item: EvidenceItem) {
-    const needsAttestation = !item.ocrAvailable || !item.redactedUrl;
-    if (needsAttestation && !item.attested) {
-      patchItem(item.id, {
-        error: 'Please check the box to confirm you reviewed the photo for personal info.',
-      });
-      return;
-    }
-    patchItem(item.id, { confirming: true, error: '' });
-    try {
-      const parsed: ReceiptParsed = {
-        merchant: item.draft.merchant.trim() || null,
-        purchasedAt: null,
-        subtotal: numOrNull(item.draft.subtotal),
-        tax: numOrNull(item.draft.tax),
-        tip: numOrNull(item.draft.tip),
-        total: numOrNull(item.draft.total),
-        fees: item.draft.fees
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((label) => ({ label, amount: null })),
-        presets: parsePresetList(item.draft.presets),
-        tipPercentReported: null,
-        rawText: null,
-        ocrEngine: 'manual',
-        ocrConfidence: null,
-      };
-      const res = await fetch(`/api/evidence/${item.id}/confirm`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          confirmed: true,
-          attestedNoPii: item.attested || undefined,
-          parsed,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        patchItem(item.id, {
-          confirming: false,
-          error: data.error || 'Could not confirm. Please try again.',
-        });
-        return;
-      }
-      const ev = data.evidence ?? {};
-      patchItem(item.id, {
-        confirming: false,
-        confirmed: ev.userConfirmed !== false,
-        redactedUrl: ev.redactedUrl ?? ev.redactedPath ?? item.redactedUrl,
-        redactionStatus: ev.redactionStatus ?? item.redactionStatus,
-        draft: ev.parsed ? draftFromParsed(ev.parsed as SiblingParsed) : item.draft,
-      });
-    } catch {
-      patchItem(item.id, { confirming: false, error: 'Network error. Please try again.' });
-    }
-  }
 
   const unconfirmed = items.filter((it) => !it.confirmed);
   const confirmedIds = items.filter((it) => it.confirmed).map((it) => it.id);
 
-  const confirmedWithFile = items.filter((it) => it.confirmed && it.redactedFile);
+  // Evidence confirmation is postponed until final submit (AutoReviewStep's
+  // prepareEvidence confirms with the PII attestation + corrected values).
+  const withFile = items.filter((it) => it.redactedFile);
   const extractTarget =
-    confirmedWithFile.find((it) => it.type === 'receipt') ?? confirmedWithFile[0] ?? null;
-  const ocrMerchant =
-    extractTarget?.draft.merchant ??
-    items.map((it) => it.draft.merchant).find((m) => m.trim()) ??
-    '';
-
-  // OCR merchant prefill + VLM venue proposal are separate prefill sources.
-  const merchants = Array.from(
-    new Set([...items.map((it) => it.draft.merchant), extractNumbers?.venue ?? '']),
-  ).filter((m) => m.trim());
+    withFile.find((it) => it.type === 'receipt') ?? withFile[0] ?? null;
 
   function resetAll() {
     setTrack(null);
@@ -1446,7 +1506,6 @@ function SubmitInner() {
     setManualStep(1);
     setItems([]);
     setStep1Error('');
-    setExtractNumbers(null);
     setManual({ ...EMPTY_MANUAL });
     setDone(false);
   }
@@ -1474,68 +1533,61 @@ function SubmitInner() {
   }
 
   /* ------------------------------------------------- auto: step 1 evidence */
+  /* ------------------------------------------- auto: step 1 receipt upload */
   function renderEvidenceStep() {
+    const receipt = items.find((it) => it.type === 'receipt') ?? null;
     return (
       <div className="form-card">
         {step1Error && <div className="form-error">{step1Error}</div>}
 
         <p className="hint" style={{ marginTop: 0 }}>
-          You&apos;ll black out private details yourself right after picking a photo —
-          the original never leaves your device. Then the review step checks the redacted
-          version — nothing publishes until you confirm it. Please no staff faces.
+          Upload your receipt photo. You&apos;ll black out private details yourself right
+          after picking it — the original never leaves your device. Nothing publishes
+          until you review and confirm it. Please no staff faces.
         </p>
 
-        {(['receipt', 'screen'] as EvidenceKind[]).map((kind) => (
-          <div className="field" key={kind}>
-            <span className="field-label">
-              {kind === 'receipt' ? 'Receipt photo' : 'Tip-screen photo'}
-            </span>
+        {!receipt ? (
+          <div className="field">
+            <span className="field-label">Receipt photo</span>
             <label className="btn btn-secondary">
-              {uploading === kind ? 'Uploading…' : 'Choose photo'}
+              {uploading === 'receipt' ? 'Uploading…' : 'Choose photo'}
               <input
                 type="file"
                 accept="image/*"
                 hidden
                 disabled={uploading !== null}
-                onChange={(e) => onFile(kind, e.target)}
+                onChange={(e) => onFile('receipt', e.target)}
               />
             </label>
           </div>
-        ))}
-
-        {items.length > 0 && (
+        ) : (
           <div className="field">
-            <span className="field-label">Added photos ({items.length})</span>
-            {items.map((it) => (
-              <div key={it.id} className="fact-row" style={{ alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                  {it.redactedUrl ? (
-                    <img
-                      src={it.redactedUrl}
-                      alt={`${KIND_LABEL[it.type]} (redacted preview)`}
-                      style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6 }}
-                    />
-                  ) : (
-                    <span className="unverified-chip">queued</span>
-                  )}
-                  <div>
-                    <div>{KIND_LABEL[it.type]}</div>
-                    <p className="hint" style={{ margin: 0 }}>
-                      {it.redactedUrl
-                        ? `redacted preview ready · ${it.redactionStatus}`
-                        : 'redaction in progress — preview will appear shortly'}
-                    </p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  onClick={() => removeItem(it.id)}
-                >
-                  Remove
-                </button>
+            <span className="field-label">Receipt photo added</span>
+            <div className="fact-row" style={{ alignItems: 'center' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                {receipt.redactedUrl ? (
+                  <img
+                    src={receipt.redactedUrl}
+                    alt="Receipt (redacted preview)"
+                    style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 6 }}
+                  />
+                ) : (
+                  <span className="unverified-chip">queued</span>
+                )}
+                <p className="hint" style={{ margin: 0 }}>
+                  {receipt.redactedUrl
+                    ? `redacted preview ready · ${receipt.redactionStatus}`
+                    : 'redaction in progress — preview will appear shortly'}
+                </p>
               </div>
-            ))}
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => removeItem(receipt.id)}
+              >
+                Remove
+              </button>
+            </div>
           </div>
         )}
 
@@ -1546,207 +1598,73 @@ function SubmitInner() {
           <button
             type="button"
             className="btn btn-primary"
-            onClick={() => setAutoStep(items.length > 0 ? 2 : 4)}
+            onClick={() => setAutoStep(receipt ? 2 : 3)}
           >
-            {items.length > 0 ? 'Continue to review' : 'Continue without photos'}
+            {receipt ? 'Continue to PII check' : 'Continue without photos'}
           </button>
         </div>
       </div>
     );
   }
 
-  /* ------------------------------------------- auto: step 2 review & confirm */
-  function renderReviewStep() {
+  /* ------------------------------------------- auto: step 2 PII check */
+  function renderPiiStep() {
+    const receipt = items.find((it) => it.type === 'receipt') ?? null;
+    if (!receipt) {
+      // No photo — nothing to check; skip ahead.
+      setAutoStep(3);
+      return null;
+    }
     return (
-      <div>
-        {items.map((it, idx) => (
-          <div className="form-card" key={it.id} style={{ marginBottom: 16 }}>
-            <h2 style={{ fontSize: 18, marginTop: 0 }}>
-              {KIND_LABEL[it.type]} ({idx + 1} of {items.length})
-            </h2>
+      <div className="form-card">
+        <p className="hint" style={{ marginTop: 0 }}>
+          This is the redacted copy that will be attached to your report — and the only
+          version our receipt reader ever sees. Look it over carefully.
+        </p>
 
-            {it.confirmed ? (
-              <div className="form-success">
-                <p style={{ margin: 0 }}>
-                  <strong>Confirmed.</strong> This photo&apos;s redacted version is approved
-                  for the report.
-                </p>
-              </div>
-            ) : (
-              <>
-                <div className="photo-compare">
-                  <div>
-                    <span className="photo-tag">Only you see this</span>
-                    <p className="field-label">Original</p>
-                    <img
-                      src={`/api/evidence/${it.id}/original`}
-                      alt={`${KIND_LABEL[it.type]} original`}
-                    />
-                  </div>
-                  <div>
-                    <span className="photo-tag">This is what publishes</span>
-                    <p className="field-label">Redacted</p>
-                    {it.redactedUrl ? (
-                      <img
-                        src={it.redactedUrl}
-                        alt={`${KIND_LABEL[it.type]} redacted`}
-                      />
-                    ) : (
-                      <p className="hint">
-                        Redacted version not available yet — review the original carefully.
-                        Confirming will also cover the redacted copy once it&apos;s ready.
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {it.error && <div className="form-error">{it.error}</div>}
-
-                <div className="field" style={{ marginTop: 12 }}>
-                  <span className="field-label">
-                    Check the numbers — fix anything the scan got wrong
-                  </span>
-                  <div className="field">
-                    <label className="field-label" htmlFor={`merchant-${it.id}`}>
-                      Merchant
-                    </label>
-                    <input
-                      type="text"
-                      id={`merchant-${it.id}`}
-                      value={it.draft.merchant}
-                      maxLength={120}
-                      onChange={(e) =>
-                        patchItem(it.id, { draft: { ...it.draft, merchant: e.target.value } })
-                      }
-                    />
-                  </div>
-                  {(
-                    [
-                      ['subtotal', 'Subtotal'],
-                      ['tax', 'Tax'],
-                      ['tip', 'Tip'],
-                      ['total', 'Total'],
-                    ] as const
-                  ).map(([key, label]) => (
-                    <div className="field" key={key}>
-                      <label className="field-label" htmlFor={`${key}-${it.id}`}>
-                        {label}
-                      </label>
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        id={`${key}-${it.id}`}
-                        value={it.draft[key]}
-                        maxLength={20}
-                        onChange={(e) =>
-                          patchItem(it.id, { draft: { ...it.draft, [key]: e.target.value } })
-                        }
-                      />
-                    </div>
-                  ))}
-                  <div className="field">
-                    <label className="field-label" htmlFor={`presets-${it.id}`}>
-                      Tip presets shown
-                    </label>
-                    <input
-                      type="text"
-                      id={`presets-${it.id}`}
-                      value={it.draft.presets}
-                      placeholder="e.g. 20, 25, 30"
-                      maxLength={60}
-                      onChange={(e) =>
-                        patchItem(it.id, { draft: { ...it.draft, presets: e.target.value } })
-                      }
-                    />
-                  </div>
-                  <div className="field">
-                    <label className="field-label" htmlFor={`fees-${it.id}`}>
-                      Fees on the receipt
-                    </label>
-                    <input
-                      type="text"
-                      id={`fees-${it.id}`}
-                      value={it.draft.fees}
-                      placeholder="e.g. service charge, card surcharge"
-                      maxLength={120}
-                      onChange={(e) =>
-                        patchItem(it.id, { draft: { ...it.draft, fees: e.target.value } })
-                      }
-                    />
-                  </div>
-                </div>
-
-                {!it.ocrAvailable && (
-                  <div className="field">
-                    <p className="hint">
-                      <strong>
-                        Automatic redaction isn&apos;t available here — please cover card
-                        numbers, names, and barcodes in your photo before uploading.
-                      </strong>
-                    </p>
-                    <label className="checkbox-option">
-                      <input
-                        type="checkbox"
-                        checked={it.attested}
-                        onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
-                      />
-                      I checked this photo for personal info (card numbers, auth codes, contact
-                      info, barcodes)
-                    </label>
-                  </div>
-                )}
-                {!it.redactedUrl && it.ocrAvailable && (
-                  <div className="field">
-                    <label className="checkbox-option">
-                      <input
-                        type="checkbox"
-                        checked={it.attested}
-                        onChange={(e) => patchItem(it.id, { attested: e.target.checked })}
-                      />
-                      I checked this photo for personal info (card numbers, auth codes, contact
-                      info, barcodes)
-                    </label>
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  className="submit-btn"
-                  disabled={it.confirming}
-                  onClick={() => confirmItem(it)}
-                >
-                  {it.confirming ? 'Confirming…' : 'Confirm this photo'}
-                </button>
-              </>
-            )}
-          </div>
-        ))}
-
-        {unconfirmed.length > 0 && (
-          <div className="form-error">
-            Still unconfirmed: {unconfirmed.map((it) => KIND_LABEL[it.type]).join(', ')}. Photos
-            aren&apos;t attached until you confirm each one above.
-          </div>
+        {receipt.redactedUrl ? (
+          <img
+            src={receipt.redactedUrl}
+            alt="Redacted receipt preview"
+            style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border)' }}
+          />
+        ) : (
+          <p className="hint">Redacted preview is still being prepared…</p>
         )}
 
+        <label className="checkbox-option" style={{ marginTop: 16 }}>
+          <input
+            type="checkbox"
+            checked={piiAttested}
+            onChange={(e) => setPiiAttested(e.target.checked)}
+          />
+          I blacked out all personal information on this photo — card details, names,
+          authorization codes, contact info, and barcodes.
+        </label>
+
         <div className="btn-row" style={{ marginTop: 16 }}>
-          <button type="button" className="btn btn-secondary" onClick={() => setAutoStep(1)}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            onClick={() => setAutoStep(1)}
+          >
             Back
           </button>
           <button
             type="button"
             className="btn btn-primary"
-            disabled={unconfirmed.length > 0}
+            disabled={!piiAttested}
             onClick={() => setAutoStep(3)}
           >
-            Read my receipt
+            Looks good — read my receipt
           </button>
         </div>
       </div>
     );
   }
 
-  const AUTO_LABELS = ['Proof', 'Redaction check', 'Receipt read', 'The facts'];
+
+  const AUTO_LABELS = ['Receipt photo', 'PII check', 'Review & submit'];
   const MANUAL_LABELS = ['Numbers', 'The facts'];
 
   return (
@@ -1785,31 +1703,13 @@ function SubmitInner() {
           </p>
           <Stepper labels={AUTO_LABELS} step={autoStep} />
           {autoStep === 1 && renderEvidenceStep()}
-          {autoStep === 2 && renderReviewStep()}
+          {autoStep === 2 && renderPiiStep()}
           {autoStep === 3 && (
-            <ExtractStep
+            <AutoReviewStep
               file={extractTarget?.redactedFile ?? null}
-              ocrMerchant={ocrMerchant}
-              onDone={(n) => {
-                setExtractNumbers(n);
-                setAutoStep(4);
-              }}
-              onBack={() => setAutoStep(2)}
-            />
-          )}
-          {autoStep === 4 && (
-            <FactsForm
-              track="auto"
-              merchants={merchants}
+              evidenceId={extractTarget?.id ?? null}
               preselect={preselect}
-              confirmedCount={confirmedIds.length}
-              prefillPresets={extractNumbers?.presets ?? ''}
-              prefillTipBase={extractNumbers?.taxBase ?? ''}
-              showFees
-              manualFees={[]}
-              buildFactsLine={(tipBase) => buildFactsLine(extractNumbers, tipBase)}
-              confirmedIds={confirmedIds}
-              onBack={() => setAutoStep(items.length > 0 ? 3 : 1)}
+              onBack={() => setAutoStep(items.length > 0 ? 2 : 1)}
               onSubmitted={() => setDone(true)}
             />
           )}

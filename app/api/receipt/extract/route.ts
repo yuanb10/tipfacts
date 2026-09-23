@@ -9,9 +9,9 @@ import {
  * POST /api/receipt/extract
  *
  * VLM extraction track (TipFacts PRD v0.3, decision 14): extracts receipt
- * facts from the ALREADY-REDACTED receipt photo. The original never leaves
- * the user's device; the server only ever receives the redacted image and
- * must never persist it, write it to disk, or log it.
+ * facts from ALREADY-REDACTED receipt photo(s). The original never leaves
+ * the user's device; the server only ever receives the redacted image(s)
+ * and must never persist them, write them to disk, or log them.
  *
  * Tier note (Bo, 2026-09-22): we start on the Gemini FREE tier (prompts may
  * be used for training — acceptable because only the already-redacted image
@@ -20,13 +20,17 @@ import {
  * avoids paid-tier-only features (no batch API, no context caching).
  *
  * Contract (built against by the /submit UI):
- * - Request: multipart/form-data, field `image` = redacted JPEG file.
+ * - Request: multipart/form-data, field `image` = redacted JPEG file
+ *   (single), or `images` = up to 4 redacted image files (multi-slip:
+ *   itemized bill + card slip, multi-page, ...). `image` is kept for
+ *   backward compatibility.
  * - Success: 200 { ok: true, data: Extraction }
  * - Failure: 503 { ok: false, error: string, fallback: 'manual' } — the UI
  *   treats 503 as "fall back to the manual track".
  */
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // safety net; client compresses to ≤1600px side
+const MAX_IMAGES = 4;
 
 // Free-tier rate limits are strict: on 429 (or a transient 5xx) retry with
 // backoff, then give up cleanly to the manual track. Bounded so a single
@@ -78,7 +82,12 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   if (!apiKey) {
     return fallback('Receipt extraction is not configured right now.');
   }
-  const model = process.env.GEMINI_MODEL || 'gemini-3-flash';
+  // Model fallback chain: same price class, different capacity pools. We saw
+  // gemini-3.6-flash 503 while gemini-3-flash-preview served fine (2026-09-22).
+  const models = [
+    process.env.GEMINI_MODEL || 'gemini-3-flash-preview',
+    'gemini-3.6-flash',
+  ];
 
   let form: FormData;
   try {
@@ -87,63 +96,83 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
     return fallback('Could not read the uploaded image.');
   }
 
-  const file = form.get('image');
-  if (!(file instanceof File)) {
+  // Accept `image` (single, legacy) and/or `images` (multi-slip/multi-page).
+  const files: File[] = [];
+  const single = form.get('image');
+  if (single instanceof File) files.push(single);
+  for (const f of form.getAll('images')) {
+    if (f instanceof File) files.push(f);
+  }
+  if (files.length === 0) {
     return fallback('No image was uploaded.');
   }
-  if (!file.type.startsWith('image/')) {
-    return fallback('The uploaded file is not an image.');
+  if (files.length > MAX_IMAGES) {
+    return fallback(`Please upload at most ${MAX_IMAGES} images of the same receipt.`);
   }
-  if (file.size > MAX_IMAGE_BYTES) {
-    return fallback('The image is too large. Please try a smaller photo.');
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) {
+      return fallback('The uploaded file is not an image.');
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      return fallback('An image is too large. Please try a smaller photo.');
+    }
   }
 
   // In-memory only: never written to disk, never persisted, never logged.
-  const base64 = Buffer.from(await file.arrayBuffer()).toString('base64');
-
-  const requestBody = JSON.stringify({
-    contents: [
-      {
-        parts: [
-          { text: EXTRACTION_PROMPT },
-          { inlineData: { mimeType: file.type, data: base64 } },
-        ],
+  const inlineParts = await Promise.all(
+    files.map(async (file) => ({
+      inlineData: {
+        mimeType: file.type,
+        data: Buffer.from(await file.arrayBuffer()).toString('base64'),
       },
-    ],
+    })),
+  );
+
+  const parts = [{ text: EXTRACTION_PROMPT }, ...inlineParts];
+  const requestBody = JSON.stringify({
+    contents: [{ parts }],
     generationConfig: { responseMimeType: 'application/json', temperature: 0.2 },
   });
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
 
+  // Try the primary model with retries, then fall through to the next model
+  // in the chain before giving up to the manual track.
   let upstream: Response | null = null;
-  let networkFailed = false;
-  for (let attempt = 0; ; attempt++) {
+  let lastStatus: number | null = null;
+  let modelFailed = false;
+
+  for (const model of models) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
     upstream = null;
-    networkFailed = false;
-    try {
-      upstream = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: requestBody,
-      });
-    } catch {
-      networkFailed = true;
+    modelFailed = false;
+    for (let attempt = 0; ; attempt++) {
+      upstream = null;
+      let networkFailed = false;
+      try {
+        upstream = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': apiKey,
+          },
+          body: requestBody,
+        });
+      } catch {
+        networkFailed = true;
+      }
+      const retryable = networkFailed || (upstream !== null && RETRYABLE.has(upstream.status));
+      if (!retryable || attempt >= MAX_RETRIES) break;
+      await sleep(retryDelayMs(attempt, upstream));
     }
-    const retryable = networkFailed || (upstream !== null && RETRYABLE.has(upstream.status));
-    if (!retryable || attempt >= MAX_RETRIES) break;
-    await sleep(retryDelayMs(attempt, upstream));
+    if (upstream && upstream.ok) break; // success — stop the chain
+    if (upstream) lastStatus = upstream.status;
+    modelFailed = true;
+    console.error(
+      `[receipt/extract] Gemini model ${model} failed (HTTP ${lastStatus ?? 'network'}), trying next in chain`,
+    );
   }
 
-  if (!upstream) {
-    return fallback('Could not reach the extraction service. Please try again.');
-  }
-
-  if (!upstream.ok) {
-    // Log only the status — never the image, base64, or request body.
-    console.error(`[receipt/extract] Gemini returned HTTP ${upstream.status} (free tier)`);
-    if (upstream.status === 429) {
+  if (!upstream || modelFailed) {
+    if (lastStatus === 429) {
       return fallback('The extraction service is busy right now. Please try the manual entry.');
     }
     return fallback('The extraction service failed. Please try again.');
