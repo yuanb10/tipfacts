@@ -81,6 +81,9 @@ interface EvidenceItem {
    * were uploaded to /api/evidence. Only these bytes ever go to
    * /api/receipt/extract; the original photo is never sent anywhere. */
   redactedFile: File | null;
+  /** Local object URL for the redacted export — the preview source when the
+   * server has no redacted copy (e.g. no OCR available locally). */
+  localPreviewUrl: string;
 }
 
 /** Shape of /api/receipt/extract's `data` payload (nulls for unreadable fields). */
@@ -825,6 +828,7 @@ values right before POSTing /api/submissions. */
 function AutoReviewStep({
   file,
   evidenceId,
+  previewUrl,
   preselect,
   onBack,
   onSubmitted,
@@ -833,6 +837,8 @@ function AutoReviewStep({
   file: File | null;
   /** Evidence id to confirm at submit time (null when no photo was uploaded). */
   evidenceId: string | null;
+  /** Preview of the redacted copy (server copy, else the on-device export). */
+  previewUrl: string | null;
   preselect: PreselectVenue | null;
   onBack: () => void;
   onSubmitted: () => void;
@@ -1033,24 +1039,41 @@ function AutoReviewStep({
   );
 
   return (
-    <FactsForm
-      track="auto"
-      merchants={venueHint ? [venueHint] : []}
-      preselect={preselect}
-      confirmedCount={evidenceId ? 1 : 0}
-      prefillMinTip={minTip}
-      prefillTipBase={fields.taxBase}
-      prefillFees={feeValues}
-      showFees
-      manualFees={[]}
-      buildFactsLine={(tipBase) => buildFactsLine(fields, tipBase)}
-      confirmedIds={[]}
-      receiptBlock={receiptBlock}
-      prepareEvidence={prepareEvidence}
-      venueKey={venueHint}
-      onBack={onBack}
-      onSubmitted={onSubmitted}
-    />
+    <>
+      {previewUrl && (
+        <div className="form-card" style={{ marginBottom: 16 }}>
+          <span className="field-label">Attached receipt (redacted)</span>
+          <img
+            src={previewUrl}
+            alt="Redacted receipt attached to this report"
+            style={{
+              width: '100%',
+              borderRadius: 8,
+              border: '1px solid var(--line)',
+              marginTop: 8,
+            }}
+          />
+        </div>
+      )}
+      <FactsForm
+        track="auto"
+        merchants={venueHint ? [venueHint] : []}
+        preselect={preselect}
+        confirmedCount={evidenceId ? 1 : 0}
+        prefillMinTip={minTip}
+        prefillTipBase={fields.taxBase}
+        prefillFees={feeValues}
+        showFees
+        manualFees={[]}
+        buildFactsLine={(tipBase) => buildFactsLine(fields, tipBase)}
+        confirmedIds={[]}
+        receiptBlock={receiptBlock}
+        prepareEvidence={prepareEvidence}
+        venueKey={venueHint}
+        onBack={onBack}
+        onSubmitted={onSubmitted}
+      />
+    </>
   );
 }
 
@@ -1449,6 +1472,8 @@ function SubmitInner() {
           // Stash the redacted export: the extract step sends these same bytes
           // to /api/receipt/extract. The original photo never leaves the device.
           redactedFile: file,
+          // Local preview: the server only has a redacted copy when OCR ran.
+          localPreviewUrl: URL.createObjectURL(file),
         },
       ]);
     } catch {
@@ -1466,7 +1491,11 @@ function SubmitInner() {
   }
 
   function removeItem(id: string) {
-    setItems((prev) => prev.filter((it) => it.id !== id));
+    setItems((prev) => {
+      const doomed = prev.find((it) => it.id === id);
+      if (doomed) URL.revokeObjectURL(doomed.localPreviewUrl);
+      return prev.filter((it) => it.id !== id);
+    });
   }
 
 
@@ -1480,10 +1509,13 @@ function SubmitInner() {
     withFile.find((it) => it.type === 'receipt') ?? withFile[0] ?? null;
 
   function resetAll() {
+    setItems((prev) => {
+      prev.forEach((it) => URL.revokeObjectURL(it.localPreviewUrl));
+      return [];
+    });
     setTrack(null);
     setAutoStep(1);
     setManualStep(1);
-    setItems([]);
     setStep1Error('');
     setPiiAttested(false);
     setManual({ ...EMPTY_MANUAL });
@@ -1515,6 +1547,9 @@ function SubmitInner() {
   /* ------------------------------------------- auto: step 1 receipt + PII check */
   function renderEvidenceStep() {
     const receipt = items.find((it) => it.type === 'receipt') ?? null;
+    // Prefer the server's redacted copy; fall back to the on-device export
+    // (the server only makes its own copy when OCR is available).
+    const previewUrl = receipt ? (receipt.redactedUrl ?? receipt.localPreviewUrl) : null;
     return (
       <div className="form-card">
         {step1Error && <div className="form-error">{step1Error}</div>}
@@ -1545,9 +1580,9 @@ function SubmitInner() {
             <span className="field-label">
               Redacted copy — this is what gets attached and read
             </span>
-            {receipt.redactedUrl ? (
+            {previewUrl ? (
               <img
-                src={receipt.redactedUrl}
+                src={previewUrl}
                 alt="Receipt (redacted preview)"
                 style={{ width: '100%', borderRadius: 8, border: '1px solid var(--line)' }}
               />
@@ -1558,7 +1593,7 @@ function SubmitInner() {
               <input
                 type="checkbox"
                 checked={piiAttested}
-                disabled={!receipt.redactedUrl}
+                disabled={!previewUrl}
                 onChange={(e) => setPiiAttested(e.target.checked)}
               />
               I blacked out all personal information on this photo — card details, names,
@@ -1637,6 +1672,11 @@ function SubmitInner() {
             <AutoReviewStep
               file={extractTarget?.redactedFile ?? null}
               evidenceId={extractTarget?.id ?? null}
+              previewUrl={
+                extractTarget
+                  ? (extractTarget.redactedUrl ?? extractTarget.localPreviewUrl)
+                  : null
+              }
               preselect={preselect}
               onBack={() => setAutoStep(1)}
               onSubmitted={() => setDone(true)}
