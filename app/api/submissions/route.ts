@@ -117,12 +117,15 @@ export async function POST(req: NextRequest) {
   const tipBaseRaw = str('tipBase');
   const guiltRaw = str('guilt');
   const easyOptOutRaw = str('easyOptOut');
+  const serviceDateRaw = str('serviceDate');
+  const serviceDate = /^\d{4}-\d{2}-\d{2}$/.test(serviceDateRaw) ? serviceDateRaw : '';
 
   const report = await storage.createReport({
     venueId: venue.id,
     venueName: venueIdRaw ? venue.name : venueName,
     city: venueIdRaw ? venue.city : city,
     area: venueIdRaw ? venue.area || str('area') : str('area'),
+    serviceDate,
     serviceType,
     screenPresentation: str('screenPresentation'),
     presets: str('presets'),

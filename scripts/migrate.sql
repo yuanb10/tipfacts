@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS reports (
   venue_name         TEXT NOT NULL,     -- as entered by the reporter
   city               TEXT NOT NULL,
   area               TEXT NOT NULL DEFAULT '',
+  service_date       TEXT NOT NULL DEFAULT '',  -- YYYY-MM-DD, when the visit happened
   service_type       TEXT NOT NULL,     -- counter | table | takeout | nonfood
   screen_presentation TEXT NOT NULL DEFAULT '',
   presets            TEXT NOT NULL DEFAULT '',
@@ -44,6 +45,9 @@ CREATE TABLE IF NOT EXISTS reports (
 CREATE INDEX IF NOT EXISTS idx_reports_venue  ON reports(venue_id);
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(moderation_status);
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
+
+-- Service date: when the visit happened (YYYY-MM-DD). Safe to re-run.
+ALTER TABLE reports ADD COLUMN IF NOT EXISTS service_date TEXT NOT NULL DEFAULT '';
 
 -- One photo. original_path is NEVER web-served; only redacted_path is public,
 -- and only after the uploader confirms the redaction.

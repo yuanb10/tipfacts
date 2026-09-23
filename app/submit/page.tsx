@@ -178,52 +178,6 @@ const FEE_OPTIONS: [string, string][] = [
 
 const FEE_LABELS: Record<string, string> = Object.fromEntries(FEE_OPTIONS);
 
-/**
- * Auto track: fees are read from the receipt, not asked. Shows what was
- * detected as removable chips (each still submits as a `fees` form value);
- * nothing detected → a plain "none" line.
- */
-function AutoFees({ prefill }: { prefill: string[] }) {
-  const [fees, setFees] = useState<string[]>(() => prefill.filter((f) => f !== 'none'));
-  return (
-    <>
-      {fees.map((v) => (
-        <input key={v} type="hidden" name="fees" value={v} />
-      ))}
-      {fees.length === 0 ? (
-        <p className="hint" style={{ margin: '4px 0 0' }}>
-          None detected on the receipt.
-        </p>
-      ) : (
-        <div className="chip-row">
-          {fees.map((v) => (
-            <span key={v} className="chip-option">
-              {FEE_LABELS[v] ?? v}
-              <button
-                type="button"
-                aria-label={`Remove ${FEE_LABELS[v] ?? v}`}
-                onClick={() => setFees((prev) => prev.filter((f) => f !== v))}
-                style={{
-                  marginLeft: 6,
-                  border: 'none',
-                  background: 'none',
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  lineHeight: 1,
-                  color: 'inherit',
-                  padding: '2px 4px',
-                }}
-              >
-                ×
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-    </>
-  );
-}
-
 function Stepper({ labels, step }: { labels: string[]; step: number }) {
   return (
     <div className="stepper" aria-label="Progress">
@@ -289,6 +243,8 @@ function VenuePicker({
   preselect: PreselectVenue | null;
 }) {
   const [selected, setSelected] = useState<VenueHit | null>(null);
+  // The search box doubles as the new-venue name: pick a match and we file
+  // under that listing; keep what you typed and we add it as a new venue.
   const [query, setQuery] = useState('');
   const [results, setResults] = useState<VenueHit[]>([]);
   const [open, setOpen] = useState(false);
@@ -296,7 +252,6 @@ function VenuePicker({
   const [nearby, setNearby] = useState<VenueHit[] | null>(null);
   const [locating, setLocating] = useState(false);
   const [locError, setLocError] = useState('');
-  const [manualName, setManualName] = useState('');
   const didPrefill = useRef(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -342,14 +297,14 @@ function VenuePicker({
             text: `We detected ${best.venue.name} from your receipt — is this right?`,
           });
         } else {
-          setManualName(merchant);
+          setQuery(merchant);
           setNotice({
             kind: 'new',
-            text: `We couldn't find "${merchant}" in our listings — we'll add it as a new venue when you submit (pending moderation).`,
+            text: `We couldn't find "${merchant}" in our listings — we'll add it as a new venue when you submit.`,
           });
         }
       } catch {
-        if (!cancelled) setManualName(merchant);
+        if (!cancelled) setQuery(merchant);
       }
     })();
     return () => {
@@ -401,8 +356,8 @@ function VenuePicker({
   }
 
   function change() {
+    setQuery(selected?.name ?? '');
     setSelected(null);
-    setManualName('');
     setNotice(null);
   }
 
@@ -472,6 +427,8 @@ function VenuePicker({
           <div className="venue-picker" ref={wrapRef}>
             <input
               type="text"
+              name="venueName"
+              required
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               onFocus={() => {
@@ -480,7 +437,7 @@ function VenuePicker({
               placeholder="Start typing a venue name…"
               maxLength={80}
               autoComplete="off"
-              aria-label="Search venues"
+              aria-label="Venue name — search our listings or type a new one"
             />
             {open && results.length > 0 && (
               <ul className="venue-results" role="listbox" aria-label="Matching venues">
@@ -496,9 +453,12 @@ function VenuePicker({
             )}
             {open && query.trim().length >= 2 && results.length === 0 && (
               <p className="hint">
-                No matches — keep typing, or fill in the name below and we&apos;ll add it.
+                No matches — what you&apos;ve typed will be added as a new venue.
               </p>
             )}
+            <p className="hint" style={{ marginTop: 4 }}>
+              Pick a match, or keep typing — a new venue is added on submit.
+            </p>
           </div>
         )}
       </div>
@@ -523,7 +483,8 @@ function VenuePicker({
               <div style={{ marginTop: 8 }}>
                 {nearby.length === 0 ? (
                   <p className="hint">
-                    No listed venues within 800m — search by name or add it below.
+                    No listed venues within 800m — search by name, or keep what
+                    you&apos;ve typed to add it as new.
                   </p>
                 ) : (
                   <>
@@ -549,26 +510,6 @@ function VenuePicker({
                 )}
               </div>
             )}
-          </div>
-
-          <div className="field">
-            <label className="field-label" htmlFor="venueName">
-              Venue name <span className="required-mark">*</span>
-            </label>
-            <input
-              type="text"
-              id="venueName"
-              name="venueName"
-              required
-              maxLength={120}
-              value={manualName}
-              onChange={(e) => setManualName(e.target.value)}
-              placeholder="e.g. Demo Diner"
-            />
-            <p className="hint">
-              Can&apos;t find it above? Type the full name — we&apos;ll add it as a new venue
-              (pending moderation).
-            </p>
           </div>
 
           <div className="field">
@@ -1051,7 +992,6 @@ function AutoReviewStep({
           ['subtotal', 'Subtotal'],
           ['tax', 'Tax'],
           ['tip', 'Tip'],
-          ['paidTotal', 'Paid total'],
         ] as const
       ).map(([key, label]) => (
         <div className="field" key={key}>
@@ -1070,8 +1010,92 @@ function AutoReviewStep({
       ))}
 
       <div className="field">
+        <span className="field-label">Extra fees</span>
+        {feeValues
+          .filter((f) => f !== 'none')
+          .map((v) => (
+            <input key={v} type="hidden" name="fees" value={v} />
+          ))}
+        <div className="chip-row">
+          {feeValues
+            .filter((f) => f !== 'none')
+            .map((v) => (
+              <span key={v} className="chip-option">
+                {FEE_LABELS[v] ?? v}
+                <button
+                  type="button"
+                  aria-label={`Remove ${FEE_LABELS[v] ?? v}`}
+                  onClick={() => setFeeValues((prev) => prev.filter((f) => f !== v))}
+                  style={{
+                    marginLeft: 6,
+                    border: 'none',
+                    background: 'none',
+                    cursor: 'pointer',
+                    fontSize: 14,
+                    lineHeight: 1,
+                    color: 'inherit',
+                    padding: '2px 4px',
+                  }}
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          <select
+            value=""
+            aria-label="Add a fee"
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v)
+                setFeeValues((prev) =>
+                  prev.includes(v) ? prev : [...prev.filter((f) => f !== 'none'), v],
+                );
+            }}
+            style={{
+              padding: '8px 10px',
+              borderRadius: 999,
+              border: '1px dashed var(--line)',
+              background: 'none',
+              color: 'var(--ink)',
+              fontSize: 14,
+              cursor: 'pointer',
+            }}
+          >
+            <option value="">+ Add fee…</option>
+            {FEE_OPTIONS.filter(([v]) => v !== 'none' && !feeValues.includes(v)).map(
+              ([v, label]) => (
+                <option key={v} value={v}>
+                  {label}
+                </option>
+              ),
+            )}
+          </select>
+        </div>
+        {feeValues.filter((f) => f !== 'none').length === 0 && (
+          <p className="hint" style={{ margin: '4px 0 0' }}>
+            None detected on the receipt.
+          </p>
+        )}
+        <p className="hint">Detected on your receipt — fix it if wrong.</p>
+      </div>
+
+      <div className="field">
+        <label className="field-label" htmlFor="ar-paidTotal">
+          Paid total
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="ar-paidTotal"
+          value={fields.paidTotal}
+          maxLength={20}
+          onChange={(e) => set('paidTotal', e.target.value)}
+        />
+      </div>
+
+      <div className="field">
         <label className="field-label" htmlFor="ar-tippct">
-          Tip percentage
+          Tip percentage (pre-tax)
         </label>
         <input
           type="text"
@@ -1095,10 +1119,13 @@ function AutoReviewStep({
             src={previewUrl}
             alt="Redacted receipt attached to this report"
             style={{
-              width: '100%',
+              display: 'block',
+              maxWidth: '100%',
+              maxHeight: '60vh',
+              width: 'auto',
+              margin: '8px auto 0',
               borderRadius: 8,
               border: '1px solid var(--line)',
-              marginTop: 8,
             }}
           />
         </div>
@@ -1110,8 +1137,6 @@ function AutoReviewStep({
         confirmedCount={evidenceId ? 1 : 0}
         prefillMinTip={minTip}
         prefillTipBase={fields.taxBase}
-        prefillFees={feeValues}
-        showFees
         manualFees={[]}
         buildFactsLine={(tipBase) => buildFactsLine(fields, tipBase)}
         confirmedIds={[]}
@@ -1134,8 +1159,6 @@ function FactsForm({
   confirmedCount,
   prefillMinTip,
   prefillTipBase,
-  prefillFees,
-  showFees,
   manualFees,
   buildFactsLine,
   confirmedIds,
@@ -1151,12 +1174,10 @@ function FactsForm({
   confirmedCount: number;
   prefillMinTip: string;
   prefillTipBase: 'pre-tax' | 'post-tax' | 'not-sure' | '';
-  prefillFees: string[];
-  showFees: boolean;
   manualFees: string[];
   buildFactsLine: (tipBase: string) => string;
   confirmedIds: string[];
-  /** Auto track: editable VLM-prefilled receipt values, rendered above venue. */
+  /** Auto track: editable VLM-prefilled receipt values, rendered after venue. */
   receiptBlock?: React.ReactNode;
   /** Auto track: confirm evidence (PII attested + parsed values) at submit time. */
   prepareEvidence?: (venueName: string) => Promise<{ ids: string[] } | { error: string }>;
@@ -1167,6 +1188,12 @@ function FactsForm({
 }) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  // Local YYYY-MM-DD for the service-date default/max (no timezone shift).
+  const todayStr = (() => {
+    const d = new Date();
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  })();
 
   async function onSubmitFacts(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -1234,6 +1261,21 @@ function FactsForm({
       </p>
 
       <VenuePicker key={venueKey ?? 'manual'} merchants={merchants} preselect={preselect} />
+
+      <div className="field">
+        <label className="field-label" htmlFor="serviceDate">
+          Service date
+        </label>
+        <input
+          type="date"
+          id="serviceDate"
+          name="serviceDate"
+          defaultValue={todayStr}
+          max={todayStr}
+        />
+        <p className="hint">When did you visit? Defaults to today.</p>
+      </div>
+
       {receiptBlock}
 
       <div className="field">
@@ -1314,35 +1356,6 @@ function FactsForm({
           ))}
         </div>
       </div>
-
-      {showFees && (
-        <div className="field">
-          {track === 'auto' ? (
-            <>
-              <span className="field-label">Extra fees</span>
-              <AutoFees prefill={prefillFees} />
-              <p className="hint">Read from your receipt — remove any it got wrong.</p>
-            </>
-          ) : (
-            <>
-              <span className="field-label">Any extra fees?</span>
-              <div className="checkbox-group">
-                {FEE_OPTIONS.map(([val, label]) => (
-                  <label key={val} className="checkbox-option">
-                    <input
-                      type="checkbox"
-                      name="fees"
-                      value={val}
-                      defaultChecked={prefillFees.includes(val)}
-                    />
-                    {label}
-                  </label>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
 
       <div className="field">
         <span className="field-label">
@@ -1451,6 +1464,9 @@ function SubmitInner() {
   const [uploading, setUploading] = useState<EvidenceKind | null>(null);
   const [step1Error, setStep1Error] = useState('');
   const [editing, setEditing] = useState<{ kind: EvidenceKind; file: File } | null>(null);
+  // The original picked photo, kept so "Re-do blackout" can reopen the
+  // canvas without asking the user to pick the file again.
+  const [originalReceipt, setOriginalReceipt] = useState<File | null>(null);
   const [piiAttested, setPiiAttested] = useState(false);
   const [manual, setManual] = useState<ManualNums>({ ...EMPTY_MANUAL });
   const [done, setDone] = useState(false);
@@ -1540,7 +1556,10 @@ function SubmitInner() {
     const file = input?.files?.[0];
     if (input) input.value = '';
     // Open the on-device redaction editor instead of uploading the raw file.
-    if (file) setEditing({ kind, file });
+    if (file) {
+      if (kind === 'receipt') setOriginalReceipt(file);
+      setEditing({ kind, file });
+    }
   }
 
   function removeItem(id: string) {
@@ -1566,6 +1585,8 @@ function SubmitInner() {
       prev.forEach((it) => URL.revokeObjectURL(it.localPreviewUrl));
       return [];
     });
+    setOriginalReceipt(null);
+    setEditing(null);
     setTrack(null);
     setAutoStep(1);
     setManualStep(1);
@@ -1582,8 +1603,8 @@ function SubmitInner() {
         <p className="eyebrow">Log a report</p>
         <h1 className="page-title">Report logged.</h1>
         <div className="form-success">
-          <h2>Thanks — your report is pending moderation.</h2>
-          <p>It will appear in the rankings once approved. One more while you&apos;re at it?</p>
+          <h2>Thanks — your report is live.</h2>
+          <p>It&apos;s in the directory now. One more while you&apos;re at it?</p>
           <div className="btn-row">
             <a href="/" className="btn btn-primary">
               See the rankings
@@ -1637,7 +1658,15 @@ function SubmitInner() {
               <img
                 src={previewUrl}
                 alt="Receipt (redacted preview)"
-                style={{ width: '100%', borderRadius: 8, border: '1px solid var(--line)' }}
+                style={{
+                  display: 'block',
+                  maxWidth: '100%',
+                  maxHeight: '60vh',
+                  width: 'auto',
+                  margin: '0 auto',
+                  borderRadius: 8,
+                  border: '1px solid var(--line)',
+                }}
               />
             ) : (
               <p className="hint">Redacted preview is still being prepared…</p>
@@ -1652,11 +1681,26 @@ function SubmitInner() {
               I blacked out all personal information on this photo — card details, names,
               authorization codes, contact info, and barcodes.
             </label>
-            <div style={{ marginTop: 8 }}>
+            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               <button
                 type="button"
                 className="btn btn-secondary"
-                onClick={() => removeItem(receipt.id)}
+                disabled={!originalReceipt}
+                onClick={() => {
+                  if (!originalReceipt) return;
+                  removeItem(receipt.id);
+                  setEditing({ kind: 'receipt', file: originalReceipt });
+                }}
+              >
+                Re-do blackout
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => {
+                  removeItem(receipt.id);
+                  setOriginalReceipt(null);
+                }}
               >
                 Remove
               </button>
@@ -1762,8 +1806,6 @@ function SubmitInner() {
               confirmedCount={0}
               prefillMinTip=""
               prefillTipBase={manual.base === 'not-sure' ? '' : manual.base}
-              prefillFees={[]}
-              showFees={false}
               manualFees={manual.fees}
               buildFactsLine={(tipBase) => {
                 const pct = tipPercentOf(numOrNull(manual.tip), numOrNull(manual.subtotal));

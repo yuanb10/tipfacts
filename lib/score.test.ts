@@ -30,6 +30,7 @@ function baseReport(over: Partial<Report> & { id: string }): Report {
     venueName: 'Test Venue',
     city: 'Seattle',
     area: '',
+    serviceDate: '',
     serviceType: 'table',
     screenPresentation: '',
     presets: '',

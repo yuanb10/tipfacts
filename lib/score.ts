@@ -453,6 +453,7 @@ export interface SanitizedReport {
   venueName: string;
   city: string;
   area: string;
+  serviceDate: string; // YYYY-MM-DD, '' = unknown
   serviceType: ServiceType;
   screenPresentation: string;
   presets: string;
@@ -511,6 +512,7 @@ export function sanitizeReport(r: Report, evidenceById: Map<string, Evidence>): 
     venueName: r.venueName,
     city: r.city,
     area: r.area,
+    serviceDate: r.serviceDate ?? '',
     serviceType: r.serviceType,
     screenPresentation: r.screenPresentation,
     presets: r.presets,

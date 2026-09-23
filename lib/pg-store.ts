@@ -47,6 +47,7 @@ function toReport(row: any): Report {
     venueName: row.venue_name,
     city: row.city,
     area: row.area ?? '',
+    serviceDate: row.service_date ?? '',
     serviceType: row.service_type,
     screenPresentation: row.screen_presentation ?? '',
     presets: row.presets ?? '',
@@ -222,11 +223,11 @@ export class PostgresStore implements Storage {
     const moderationStatus = process.env.MOD_SECRET ? 'pending' : 'approved';
     const { rows } = await this.pool.query(
       `INSERT INTO reports
-         (id, venue_id, venue_name, city, area, service_type, screen_presentation,
+         (id, venue_id, venue_name, city, area, service_date, service_type, screen_presentation,
           presets, tip_base, fees, guilt, easy_opt_out, experience_note, notes, evidence_ids,
           reporter_hash, is_seed, moderation_status)
        VALUES
-         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
+         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12,$13,$14,$15,$16::jsonb,$17,$18,$19)
        RETURNING *`,
       [
         id,
@@ -234,6 +235,7 @@ export class PostgresStore implements Storage {
         input.venueName,
         input.city,
         input.area ?? '',
+        input.serviceDate ?? '',
         input.serviceType,
         input.screenPresentation ?? '',
         input.presets ?? '',

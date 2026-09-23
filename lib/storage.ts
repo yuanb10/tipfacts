@@ -57,6 +57,7 @@ export interface Report {
   venueName: string; // as entered by the reporter
   city: string;
   area: string;
+  serviceDate: string; // YYYY-MM-DD — when the visit happened ('' = unknown)
   serviceType: ServiceType;
   screenPresentation: string;
   presets: string;
@@ -118,6 +119,7 @@ export interface NewReport {
   venueName: string;
   city: string;
   area?: string;
+  serviceDate?: string; // YYYY-MM-DD — when the visit happened ('' = unknown)
   serviceType: ServiceType;
   screenPresentation?: string;
   presets?: string;

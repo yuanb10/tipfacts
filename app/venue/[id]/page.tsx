@@ -445,7 +445,7 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
           {detail.unevidencedReports.map((r) => (
             <div key={r.id} className="report-item">
               <div className="report-meta">
-                {fmtDate(r.createdAt)} · {SERVICE_TYPE_LABELS[r.serviceType]}{' '}
+                {r.serviceDate ? `Visited ${fmtDate(r.serviceDate + 'T12:00:00')}` : fmtDate(r.createdAt)} · {SERVICE_TYPE_LABELS[r.serviceType]}{' '}
                 <span className="unverified-chip">Unverified</span>
               </div>
               <div className="venue-facts">
