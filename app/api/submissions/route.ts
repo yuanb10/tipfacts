@@ -15,10 +15,10 @@ function clientIp(req: NextRequest): string {
 
 /**
  * POST /api/submissions
- *
  * Receipt-first submission endpoint (Sprint 1). Accepts multipart/form-data
- * built by the multi-step form at /submit. Reports are created with
- * moderationStatus 'pending' — they do NOT appear in rankings until approved.
+ * built by the multi-step form at /submit. v1: reports publish immediately
+ * (no MOD_SECRET → moderation queue not live yet); setting MOD_SECRET puts
+ * new reports back to 'pending' until approved.
  */
 export async function POST(req: NextRequest) {
   const ip = clientIp(req);

@@ -176,6 +176,54 @@ const FEE_OPTIONS: [string, string][] = [
   ['other', 'Other'],
 ];
 
+const FEE_LABELS: Record<string, string> = Object.fromEntries(FEE_OPTIONS);
+
+/**
+ * Auto track: fees are read from the receipt, not asked. Shows what was
+ * detected as removable chips (each still submits as a `fees` form value);
+ * nothing detected → a plain "none" line.
+ */
+function AutoFees({ prefill }: { prefill: string[] }) {
+  const [fees, setFees] = useState<string[]>(() => prefill.filter((f) => f !== 'none'));
+  return (
+    <>
+      {fees.map((v) => (
+        <input key={v} type="hidden" name="fees" value={v} />
+      ))}
+      {fees.length === 0 ? (
+        <p className="hint" style={{ margin: '4px 0 0' }}>
+          None detected on the receipt.
+        </p>
+      ) : (
+        <div className="chip-row">
+          {fees.map((v) => (
+            <span key={v} className="chip-option">
+              {FEE_LABELS[v] ?? v}
+              <button
+                type="button"
+                aria-label={`Remove ${FEE_LABELS[v] ?? v}`}
+                onClick={() => setFees((prev) => prev.filter((f) => f !== v))}
+                style={{
+                  marginLeft: 6,
+                  border: 'none',
+                  background: 'none',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  lineHeight: 1,
+                  color: 'inherit',
+                  padding: '2px 4px',
+                }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 function Stepper({ labels, step }: { labels: string[]; step: number }) {
   return (
     <div className="stepper" aria-label="Progress">
@@ -1269,25 +1317,30 @@ function FactsForm({
 
       {showFees && (
         <div className="field">
-          <span className="field-label">Any extra fees?</span>
-          {prefillFees.length > 0 && (
-            <p className="hint" style={{ marginTop: 0 }}>
-              Pre-filled from your receipt — fix it if wrong.
-            </p>
+          {track === 'auto' ? (
+            <>
+              <span className="field-label">Extra fees</span>
+              <AutoFees prefill={prefillFees} />
+              <p className="hint">Read from your receipt — remove any it got wrong.</p>
+            </>
+          ) : (
+            <>
+              <span className="field-label">Any extra fees?</span>
+              <div className="checkbox-group">
+                {FEE_OPTIONS.map(([val, label]) => (
+                  <label key={val} className="checkbox-option">
+                    <input
+                      type="checkbox"
+                      name="fees"
+                      value={val}
+                      defaultChecked={prefillFees.includes(val)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </>
           )}
-          <div className="checkbox-group">
-            {FEE_OPTIONS.map(([val, label]) => (
-              <label key={val} className="checkbox-option">
-                <input
-                  type="checkbox"
-                  name="fees"
-                  value={val}
-                  defaultChecked={prefillFees.includes(val)}
-                />
-                {label}
-              </label>
-            ))}
-          </div>
         </div>
       )}
 

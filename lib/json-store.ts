@@ -11,6 +11,7 @@ import type {
   Evidence,
   FindOrCreateVenueOpts,
   ModerationAction,
+  ModerationStatus,
   NewEvidence,
   NewReport,
   RateLimitResult,
@@ -226,7 +227,10 @@ export class JsonStore implements Storage {
       experienceNote: input.experienceNote ?? '',
       notes: input.notes ?? '',
       evidenceIds: input.evidenceIds ?? [],
-      moderationStatus: 'pending',
+      // v1: moderation isn't wired up yet (no MOD_SECRET), so publish
+      // immediately. Setting MOD_SECRET later puts new reports back to
+      // 'pending' with zero code changes.
+      moderationStatus: (process.env.MOD_SECRET ? 'pending' : 'approved') as ModerationStatus,
       moderationNote: '',
       decidedAt: null,
       reporterHash: input.reporterHash ?? '',

@@ -216,13 +216,17 @@ export class PostgresStore implements Storage {
 
   async createReport(input: NewReport): Promise<Report> {
     const id = newId();
+    // v1: moderation isn't wired up yet (no MOD_SECRET), so publish
+    // immediately. Setting MOD_SECRET later puts new reports back to
+    // 'pending' with zero code changes.
+    const moderationStatus = process.env.MOD_SECRET ? 'pending' : 'approved';
     const { rows } = await this.pool.query(
       `INSERT INTO reports
          (id, venue_id, venue_name, city, area, service_type, screen_presentation,
           presets, tip_base, fees, guilt, easy_opt_out, experience_note, notes, evidence_ids,
-          reporter_hash, is_seed)
+          reporter_hash, is_seed, moderation_status)
        VALUES
-         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15::jsonb,$16,$17)
+         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,$15::jsonb,$16,$17,$18)
        RETURNING *`,
       [
         id,
@@ -242,6 +246,7 @@ export class PostgresStore implements Storage {
         JSON.stringify(input.evidenceIds ?? []),
         input.reporterHash ?? '',
         input.isSeed ?? false,
+        moderationStatus,
       ],
     );
     const report = toReport(rows[0]);
