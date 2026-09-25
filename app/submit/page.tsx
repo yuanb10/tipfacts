@@ -1774,7 +1774,7 @@ function SubmitInner() {
               I blacked out all personal information on this photo — card details, names,
               authorization codes, contact info, and barcodes.
             </label>
-            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <div className="btn-row btn-row-split" style={{ marginTop: 8 }}>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -1802,16 +1802,13 @@ function SubmitInner() {
         )}
 
         <div className="btn-row" style={{ marginTop: 16 }}>
-          <button type="button" className="btn btn-secondary" onClick={() => setTrack(null)}>
-            Switch track
-          </button>
           <button
             type="button"
             className="btn btn-primary"
             disabled={!receipt || !piiAttested}
             onClick={() => setAutoStep(2)}
           >
-            {receipt ? 'Looks good — read my receipt' : 'Add a receipt photo to continue'}
+            {receipt ? 'Read my receipt' : 'Add a receipt photo to continue'}
           </button>
         </div>
       </div>
