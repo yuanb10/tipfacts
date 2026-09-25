@@ -1018,6 +1018,14 @@ details.fold summary {
   flex-wrap: wrap;
 }
 
+/* Split row: Back + Submit share the row equally, one word each. */
+.btn-row.btn-row-split .btn,
+.btn-row.btn-row-split .submit-btn {
+  flex: 1 1 0;
+  width: auto;
+  min-height: 54px;
+}
+
 /* ---------- Forms ---------- */
 
 .form-card {

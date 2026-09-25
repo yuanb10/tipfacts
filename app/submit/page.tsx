@@ -1493,12 +1493,12 @@ function FactsForm({
         </p>
       </div>
 
-      <div className="btn-row">
+      <div className="btn-row btn-row-split">
         <button type="button" className="btn btn-secondary" onClick={onBack}>
           Back
         </button>
         <button type="submit" className="submit-btn" disabled={submitting}>
-          {submitting ? 'Submitting…' : 'Submit report'}
+          {submitting ? 'Submitting…' : 'Submit'}
         </button>
       </div>
     </form>
