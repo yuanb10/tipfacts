@@ -336,6 +336,28 @@ export function medianReportedTip(
 }
 
 /**
+ * Min/max of parsed.tipPercentReported across confirmed receipt evidence.
+ * Powers the "People pay X–Y%" range. Reported data, never truth — never scored.
+ */
+export function reportedTipRange(
+  approvedReports: Report[],
+  evidenceById: Map<string, Evidence>,
+): { min: number; max: number; count: number } | null {
+  const values: number[] = [];
+  for (const r of approvedReports) {
+    for (const id of r.evidenceIds) {
+      const e = evidenceById.get(id);
+      if (isConfirmed(e) && e.type === 'receipt') {
+        const p = e.parsed?.tipPercentReported;
+        if (typeof p === 'number' && Number.isFinite(p) && p >= 0) values.push(p);
+      }
+    }
+  }
+  if (values.length === 0) return null;
+  return { min: Math.min(...values), max: Math.max(...values), count: values.length };
+}
+
+/**
  * How often each fee key appears across confirmed receipt evidence
  * (parsed fee labels only — reported evidence, not scored).
  */
@@ -500,7 +522,11 @@ export interface VenueDetail {
   evidence: PublicEvidence[];
   guiltStats: { yes: number; no: number; skipped: number };
   guiltNotes: { id: string; note: string; createdAt: string }[];
-  receiptStats: { medianReportedTip: number | null; feeFrequency: { fee: string; count: number }[] };
+  receiptStats: {
+    medianReportedTip: number | null;
+    tipRange: { min: number; max: number; count: number } | null;
+    feeFrequency: { fee: string; count: number }[];
+  };
   changelog: ModerationAction[];
   lastUpdated: string;
 }
@@ -639,6 +665,7 @@ export async function getVenueDetail(id: string): Promise<VenueDetail | null> {
     guiltNotes,
     receiptStats: {
       medianReportedTip: medianReportedTip(approved, evidenceById),
+      tipRange: reportedTipRange(approved, evidenceById),
       feeFrequency: feeFrequency(approved, evidenceById),
     },
     changelog,

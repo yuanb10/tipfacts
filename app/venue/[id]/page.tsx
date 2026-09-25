@@ -78,124 +78,81 @@ function EvidenceThumb({ evidence }: { evidence: PublicEvidence }) {
   );
 }
 
-/** Muted "photo-verified" marker — typography, not a colored chip. */
-function VMark() {
-  return <span className="vmark">✓ photo-verified</span>;
-}
-
-/**
- * The tip-facts card: the three questions a checker asks, answered in one
- * glanceable card (PRD §5.3 V.1). No chips, no bars — question, big answer,
- * one quiet sub-line.
- */
-function TipFactsCard({ detail }: { detail: VenueDetail }) {
-  const { backedFacts } = detail;
-
-  // Guilt sub-facts.
-  const guilt = detail.guiltStats;
-  const guiltTotal = guilt.yes + guilt.no;
-  const guiltPct = guiltTotal > 0 ? Math.round((guilt.yes / guiltTotal) * 100) : null;
-  const watchRe = /\bwatch(?:ing|ed)?\b|\bstar(?:e|ing|ed)?\b|\bobserv(?:e|ed|ing)\b/;
-  const watchCount = detail.guiltNotes.filter((n) =>
-    watchRe.test(n.note.toLowerCase()),
-  ).length;
-  const optOut = backedFacts.easyOptOut;
-  const guiltSubs: string[] = [];
-  if (optOut === 'yes') guiltSubs.push('custom or no tip: easy to choose');
-  else if (optOut === 'no') guiltSubs.push('custom or no tip: hard to choose');
-  if (watchCount > 0)
-    guiltSubs.push(
-      `staff watched while choosing: mentioned in ${watchCount} report${watchCount === 1 ? '' : 's'}`,
-    );
-
-  const fees = backedFacts.fees.filter((f) => f !== 'none');
-  const base = backedFacts.tipBase;
-
+/** "They ask X% · People pay Y–Z%" — the one thing a customer opens the page for. */
+function AskPayCard({ detail }: { detail: VenueDetail }) {
+  const ask = detail.backedFacts.minPreset;
+  const pay = detail.receiptStats.tipRange;
+  const lo = pay === null ? null : Math.round(pay.min);
+  const hi = pay === null ? null : Math.round(pay.max);
   return (
-    <section className="tipfacts-card" aria-label="Tip facts">
-      {/* Q1 — minimum decent tip */}
-      <div className="tipfact">
-        <p className="tipfact-q">Minimum decent tip</p>
-        {backedFacts.minPreset === null ? (
-          <p className="tipfact-empty">No data yet</p>
+    <section className="askpay-card" aria-label="What to tip here">
+      <div className="askpay-col">
+        <p className="askpay-label">They ask</p>
+        {ask === null ? (
+          <p className="askpay-empty">No data yet</p>
         ) : (
           <>
-            <p className="tipfact-a">{fmtPct(backedFacts.minPreset)}</p>
-            <p className="tipfact-sub">
-              Lowest preset seen on a verified tip screen — the cheap person&rsquo;s
-              answer. <VMark />
-              {backedFacts.presets.length > 1 &&
-                ` Also seen: ${backedFacts.presets.map(fmtPct).join(', ')}.`}
+            <p className="askpay-num">{fmtPct(ask)}</p>
+            <p className="askpay-sub">lowest preset on the tip screen</p>
+          </>
+        )}
+      </div>
+      <div className="askpay-divider" aria-hidden="true" />
+      <div className="askpay-col">
+        <p className="askpay-label">People pay</p>
+        {pay === null || lo === null || hi === null ? (
+          <p className="askpay-empty">No data yet</p>
+        ) : (
+          <>
+            <p className="askpay-num">{lo === hi ? `${lo}%` : `${lo}–${hi}%`}</p>
+            <p className="askpay-sub">
+              from {pay.count} receipt{pay.count === 1 ? '' : 's'}
             </p>
           </>
         )}
       </div>
-
-      {/* Q2 — tip tax base */}
-      <div className="tipfact">
-        <p className="tipfact-q">Tip calculated on</p>
-        {base === '' || base === 'not-sure' ? (
-          <p className="tipfact-empty">Unknown — no verified receipt settles it yet</p>
-        ) : (
-          <>
-            <p className="tipfact-a">
-              {base === 'post-tax' ? (
-                <>
-                  Post-tax total <span className="warn-inline">⚠</span>
-                </>
-              ) : (
-                'Pre-tax subtotal'
-              )}
-            </p>
-            <p className="tipfact-sub">
-              {base === 'post-tax' ? (
-                <>
-                  A {backedFacts.minPreset !== null ? fmtPct(backedFacts.minPreset) : 'typical'}{' '}
-                  tip here costs more than the same percentage at a pre-tax place.{' '}
-                </>
-              ) : (
-                <>The less costly standard. </>
-              )}
-              <VMark />
-            </p>
-          </>
-        )}
-      </div>
-
-      {/* Q3 — guilt signals */}
-      <div className="tipfact">
-        <p className="tipfact-q">Felt tipping pressure</p>
-        {guiltPct === null ? (
-          <p className="tipfact-empty">No data yet</p>
-        ) : (
-          <>
-            <p className="tipfact-a">
-              {guiltPct}% <span className="tipfact-a-sub">of {guiltTotal}</span>
-            </p>
-            <p className="tipfact-sub">
-              of {guiltTotal} respondent{guiltTotal === 1 ? '' : 's'} said they felt
-              pressure
-              {guiltSubs.length > 0 && ` · ${guiltSubs.join(' · ')}`}
-            </p>
-          </>
-        )}
-      </div>
-
-      {/* Extra fees — only when verified fees exist */}
-      {fees.length > 0 && (
-        <div className="tipfact">
-          <p className="tipfact-q">Extra fees</p>
-          <p className="tipfact-a tipfact-a-sm">
-            {fees.map((f) => FEE_LABELS[f] ?? f).join(' · ')}
-          </p>
-          <p className="tipfact-sub">
-            Spotted on verified receipts. <VMark />
-          </p>
-        </div>
-      )}
     </section>
   );
 }
+
+/** The fine print: tip math, extra fees, pressure. Only rows with data. */
+function FinePrint({ detail }: { detail: VenueDetail }) {
+  const base = detail.backedFacts.tipBase;
+  const fees = detail.backedFacts.fees.filter((f) => f !== 'none');
+  const guilt = detail.guiltStats;
+  const guiltTotal = guilt.yes + guilt.no;
+  const guiltPct = guiltTotal > 0 ? Math.round((guilt.yes / guiltTotal) * 100) : null;
+
+  const rows: { label: string; value: React.ReactNode }[] = [];
+  if (base === 'post-tax')
+    rows.push({
+      label: 'Tip math',
+      value: (
+        <>
+          Post-tax total <span className="warn-inline">⚠</span>
+        </>
+      ),
+    });
+  else if (base === 'pre-tax') rows.push({ label: 'Tip math', value: 'Pre-tax subtotal' });
+  if (fees.length > 0)
+    rows.push({ label: 'Extra fees', value: fees.map((f) => FEE_LABELS[f] ?? f).join(' · ') });
+  if (guiltPct !== null)
+    rows.push({ label: 'Felt pressure', value: `${guiltPct}% of ${guiltTotal}` });
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="detail-section" aria-label="The fine print">
+      <h2>The fine print</h2>
+      {rows.map((r) => (
+        <div key={r.label} className="watch-row">
+          <span className="watch-label">{r.label}</span>
+          <span className="watch-value">{r.value}</span>
+        </div>
+      ))}
+    </section>
+  );
+}
+
 
 /**
  * Squeeze Score, compact: the number, what drives it, and the machinery
@@ -338,8 +295,7 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
       <h1 className="page-title">{venue.name}</h1>
       <p className="page-sub">
         {serviceTypeLabel ? `${serviceTypeLabel} · ` : ''}
-        {venue.city}
-        {detail.approvedCount} report{detail.approvedCount === 1 ? '' : 's'} · updated{' '}
+        {venue.city} · {detail.approvedCount} report{detail.approvedCount === 1 ? '' : 's'} · updated{' '}
         {fmtDate(detail.lastUpdated)}
       </p>
 
@@ -362,70 +318,18 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
         </div>
       ) : (
         <>
-          {/* The three questions first */}
-          <TipFactsCard detail={detail} />
+          {/* 1 — what they ask vs what people pay */}
+          <AskPayCard detail={detail} />
 
-          {/* Score below the answers */}
+          {/* 2 — the squeeze score */}
           <ScoreSection detail={detail} />
 
-          {/* Receipt stats (PRD V.2) — quiet rows */}
-          <section className="detail-section">
-            <h2>From receipts</h2>
-            <p className="score-explainer" style={{ marginTop: 0 }}>
-              Reported, not truth: what people typed from their receipts.
-            </p>
-            <div className="report-line">
-              <strong>Median reported tip:</strong>{' '}
-              {detail.receiptStats.medianReportedTip === null
-                ? 'no receipt data'
-                : `${detail.receiptStats.medianReportedTip}%`}
-            </div>
-            <div className="report-line">
-              <strong>Fees seen in receipts:</strong>{' '}
-              {detail.receiptStats.feeFrequency.length === 0
-                ? 'none reported'
-                : detail.receiptStats.feeFrequency
-                    .map((f) => `${(FEE_LABELS[f.fee] ?? f.fee).toLowerCase()} ×${f.count}`)
-                    .join(', ')}
-            </div>
-          </section>
-
-          {detail.unevidencedReports.length > 0 && (
-            <section className="detail-section">
-              <h2>Community reports · unverified</h2>
-              <p className="score-explainer" style={{ marginTop: 0 }}>
-                Approved by moderation but no photo evidence yet — treat as unverified.
-              </p>
-              {detail.unevidencedReports.map((r) => (
-                <div key={r.id} className="report-line">
-                  {reportSentence(r)}
-                  {publicNotes(r.notes) && (
-                    <p className="report-note">{publicNotes(r.notes)}</p>
-                  )}
-                </div>
-              ))}
-            </section>
-          )}
+          {/* 3 — anything shady, at a glance */}
+          <FinePrint detail={detail} />
         </>
       )}
 
-      <section className="detail-section" id="subjective">
-        <h2>How people felt · subjective</h2>
-        <p className="score-explainer" style={{ marginTop: 0 }}>
-          Never scored. Individual experiences, quoted verbatim.
-        </p>
-        {detail.guiltNotes.length === 0 ? (
-          <p className="page-sub">No pressure notes yet.</p>
-        ) : (
-          detail.guiltNotes.map((n) => (
-            <div key={n.id} className="report-line">
-              <span className="report-meta">{fmtDate(n.createdAt)}</span>
-              <p className="report-note">{n.note}</p>
-            </div>
-          ))
-        )}
-      </section>
-
+      {/* Proof — the photos */}
       {detail.evidence.length > 0 && (
         <section className="detail-section">
           <h2>Evidence ({detail.evidence.length})</h2>
@@ -446,6 +350,40 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
           </div>
         </section>
       )}
+
+      {detail.unevidencedReports.length > 0 && (
+        <details className="fold section-fold">
+          <summary>
+            Community reports · unverified ({detail.unevidencedReports.length})
+          </summary>
+          <div style={{ marginTop: 8 }}>
+            {detail.unevidencedReports.map((r) => (
+              <div key={r.id} className="report-line">
+                {reportSentence(r)}
+                {publicNotes(r.notes) && (
+                  <p className="report-note">{publicNotes(r.notes)}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+
+      <details className="fold section-fold">
+        <summary>How people felt · subjective ({detail.guiltNotes.length})</summary>
+        <div style={{ marginTop: 8 }}>
+          {detail.guiltNotes.length === 0 ? (
+            <p className="page-sub">No pressure notes yet.</p>
+          ) : (
+            detail.guiltNotes.map((n) => (
+              <div key={n.id} className="report-line">
+                <span className="report-meta">{fmtDate(n.createdAt)}</span>
+                <p className="report-note">{n.note}</p>
+              </div>
+            ))
+          )}
+        </div>
+      </details>
 
       {detail.changelog.length > 0 && (
         <details className="fold section-fold">

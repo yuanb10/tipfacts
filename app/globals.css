@@ -652,9 +652,82 @@ p {
 }
 
 /* ============================================================
-   Tip facts card — the venue page hero. One card, three answers:
-   question (small caps), big answer, one quiet sub-line. No chips.
+   Ask vs pay hero — the venue page lead. Two numbers side by side:
+   what they ask (lowest tip-screen preset) vs what people pay
+   (range from verified receipts).
    ============================================================ */
+.askpay-card {
+  display: flex;
+  background: var(--surface);
+  border: 1.5px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  margin: 18px 0 20px;
+  overflow: hidden;
+}
+
+.askpay-col {
+  flex: 1 1 0;
+  padding: 18px 12px;
+  text-align: center;
+}
+
+.askpay-divider {
+  width: 1.5px;
+  background: var(--line);
+  flex: none;
+}
+
+.askpay-label {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.askpay-num {
+  margin: 0;
+  font-size: clamp(1.9rem, 9vw, 2.6rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.askpay-sub {
+  margin: 6px 0 0;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.askpay-empty {
+  margin: 8px 0;
+  color: var(--muted);
+}
+
+/* --- The fine print: quiet label/value rows --- */
+.watch-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.watch-row:last-child {
+  border-bottom: none;
+}
+
+.watch-label {
+  font-weight: 700;
+  flex: none;
+}
+
+.watch-value {
+  text-align: right;
+}
 .tipfacts-card {
   background: var(--surface);
   border: 1px solid var(--ink);
