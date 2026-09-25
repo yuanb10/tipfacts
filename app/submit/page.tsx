@@ -944,11 +944,13 @@ function ReceiptValuesBlock({
 type ExtractStatus = 'reading' | 'ready' | 'fallback';
 
 function numbersFromExtracted(d: ExtractedReceipt): ConfirmedNumbers {
+  // Never trust the VLM's own percentage: it may be computed on the wrong
+  // base (e.g. post-tax). Pre-tax is the standard, so always recompute from
+  // tip/subtotal when both are present; the VLM value is a last resort only.
   const pct =
-    d.tipPercentage ??
-    (d.tip != null && d.subtotal != null && d.subtotal > 0
+    d.tip != null && d.subtotal != null && d.subtotal > 0
       ? (d.tip / d.subtotal) * 100
-      : null);
+      : (d.tipPercentage ?? null);
   return {
     venue: d.venue ?? '',
     subtotal: numStr(d.subtotal),
