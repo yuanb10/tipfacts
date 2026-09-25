@@ -609,50 +609,56 @@ const EMPTY_MANUAL: ManualNums = {
   baseExplicit: false,
 };
 
-function ManualNumbersStep({
-  initial,
-  onContinue,
-  onBack,
-}: {
-  initial: ManualNums;
-  onContinue: (m: ManualNums) => void;
-  onBack: () => void;
-}) {
-  const [subtotal, setSubtotal] = useState(initial.subtotal);
-  const [tax, setTax] = useState(initial.tax);
-  const [tip, setTip] = useState(initial.tip);
-  const [fees, setFees] = useState<string[]>(initial.fees);
-  const [baseLocked, setBaseLocked] = useState(initial.baseExplicit);
-  const [base, setBase] = useState<'pre-tax' | 'post-tax' | 'not-sure'>(initial.base);
+/* -------- manual track: numbers section (single-page manual flow).
 
-  const st = numOrNull(subtotal);
-  const tx = numOrNull(tax);
-  const tp = numOrNull(tip);
+Controlled — writes straight into the parent's `manual` state. Rendered as
+the manual track's receipt block inside the one-page FactsForm, so the
+numbers, the live tip-% feedback, the fee checkboxes and the tip-base guess
+all live on the same page as the venue and the rest of the facts. */
+
+function ManualNumbersFields({
+  manual,
+  onChange,
+}: {
+  manual: ManualNums;
+  onChange: (m: ManualNums) => void;
+}) {
+  const set = (patch: Partial<ManualNums>) => onChange({ ...manual, ...patch });
+
+  const st = numOrNull(manual.subtotal);
+  const tx = numOrNull(manual.tax);
+  const tp = numOrNull(manual.tip);
   const pct = tipPercentOf(tp, st);
   const guess: TaxBaseGuess = inferTaxBase(st, tx, tp);
 
   // Follow the live guess until the user explicitly picks a base themselves.
   useEffect(() => {
-    if (!baseLocked) setBase(guess === 'unknown' ? 'not-sure' : guess);
-  }, [guess, baseLocked]);
+    if (!manual.baseExplicit) {
+      onChange({ ...manual, base: guess === 'unknown' ? 'not-sure' : guess });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guess, manual.baseExplicit]);
 
   function toggleFee(v: string) {
-    setFees((prev) => (prev.includes(v) ? prev.filter((f) => f !== v) : [...prev, v]));
+    set({
+      fees: manual.fees.includes(v)
+        ? manual.fees.filter((f) => f !== v)
+        : [...manual.fees, v],
+    });
   }
 
   function pickBase(v: 'pre-tax' | 'post-tax' | 'not-sure') {
-    setBase(v);
-    setBaseLocked(true);
+    set({ base: v, baseExplicit: true });
   }
 
-  // Everything except the venue (picked next) is optional — never block a
+  // Everything except the venue (picked above) is optional — never block a
   // motivated contributor, even with all fields blank.
 
   return (
-    <div className="form-card">
+    <div>
       <p className="hint" style={{ marginTop: 0 }}>
-        Just the numbers off the receipt — everything is optional except the venue, which
-        you&apos;ll pick next.
+        Just the numbers off the receipt — everything is optional except the venue
+        above.
       </p>
 
       <div className="field">
@@ -663,10 +669,10 @@ function ManualNumbersStep({
           type="text"
           inputMode="decimal"
           id="m-subtotal"
-          value={subtotal}
+          value={manual.subtotal}
           maxLength={20}
           placeholder="e.g. 42.50"
-          onChange={(e) => setSubtotal(e.target.value)}
+          onChange={(e) => set({ subtotal: e.target.value })}
         />
       </div>
       <div className="field">
@@ -677,10 +683,10 @@ function ManualNumbersStep({
           type="text"
           inputMode="decimal"
           id="m-tax"
-          value={tax}
+          value={manual.tax}
           maxLength={20}
           placeholder="e.g. 4.10"
-          onChange={(e) => setTax(e.target.value)}
+          onChange={(e) => set({ tax: e.target.value })}
         />
       </div>
       <div className="field">
@@ -691,10 +697,24 @@ function ManualNumbersStep({
           type="text"
           inputMode="decimal"
           id="m-tip"
-          value={tip}
+          value={manual.tip}
           maxLength={20}
           placeholder="e.g. 8.50"
-          onChange={(e) => setTip(e.target.value)}
+          onChange={(e) => set({ tip: e.target.value })}
+        />
+      </div>
+      <div className="field">
+        <label className="field-label" htmlFor="m-paidTotal">
+          Paid total
+        </label>
+        <input
+          type="text"
+          inputMode="decimal"
+          id="m-paidTotal"
+          value={manual.paidTotal}
+          maxLength={20}
+          placeholder="e.g. 55.10"
+          onChange={(e) => set({ paidTotal: e.target.value })}
         />
       </div>
 
@@ -713,7 +733,7 @@ function ManualNumbersStep({
             <label key={val} className="checkbox-option">
               <input
                 type="checkbox"
-                checked={fees.includes(val)}
+                checked={manual.fees.includes(val)}
                 onChange={() => toggleFee(val)}
               />
               {label}
@@ -744,24 +764,11 @@ function ManualNumbersStep({
             ] as const
           ).map(([val, label]) => (
             <label key={val} className="radio-option">
-              <input type="radio" checked={base === val} onChange={() => pickBase(val)} />
+              <input type="radio" checked={manual.base === val} onChange={() => pickBase(val)} />
               {label}
             </label>
           ))}
         </div>
-      </div>
-
-      <div className="btn-row" style={{ marginTop: 16 }}>
-        <button type="button" className="btn btn-secondary" onClick={onBack}>
-          Back
-        </button>
-        <button
-          type="button"
-          className="btn btn-primary"
-          onClick={() => onContinue({ ...initial, subtotal, tax, tip, fees, base, baseExplicit: baseLocked })}
-        >
-          Continue
-        </button>
       </div>
     </div>
   );
@@ -1233,6 +1240,8 @@ function FactsForm({
   receiptBlock,
   prepareEvidence,
   venueKey,
+  hideTipBase,
+  tipBaseValue,
   onBack,
   onSubmitted,
 }: {
@@ -1251,6 +1260,13 @@ function FactsForm({
   prepareEvidence?: (venueName: string) => Promise<{ ids: string[] } | { error: string }>;
   /** Auto track: remount VenuePicker when the VLM venue hint arrives. */
   venueKey?: string;
+  /**
+   * Manual track (single page): the tip-base question already lives in the
+   * numbers section with the live guess UI, so hide the duplicate radio group
+   * here and submit the numbers-section answer via a hidden input instead.
+   */
+  hideTipBase?: boolean;
+  tipBaseValue?: string;
   onBack: () => void;
   onSubmitted: () => void;
 }) {
@@ -1402,28 +1418,32 @@ function FactsForm({
         </p>
       </div>
 
-      <div className="field">
-        <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
-        <div className="radio-group">
-          {(
-            [
-              ['pre-tax', 'Pre-tax subtotal'],
-              ['post-tax', 'Post-tax total'],
-              ['not-sure', 'Not sure'],
-            ] as const
-          ).map(([val, label]) => (
-            <label key={val} className="radio-option">
-              <input
-                type="radio"
-                name="tipBase"
-                value={val}
-                defaultChecked={prefillTipBase === val}
-              />
-              {label}
-            </label>
-          ))}
+      {hideTipBase ? (
+        <input type="hidden" name="tipBase" value={tipBaseValue ?? 'not-sure'} readOnly />
+      ) : (
+        <div className="field">
+          <span className="field-label">Was the tip calculated pre-tax or post-tax?</span>
+          <div className="radio-group">
+            {(
+              [
+                ['pre-tax', 'Pre-tax subtotal'],
+                ['post-tax', 'Post-tax total'],
+                ['not-sure', 'Not sure'],
+              ] as const
+            ).map(([val, label]) => (
+              <label key={val} className="radio-option">
+                <input
+                  type="radio"
+                  name="tipBase"
+                  value={val}
+                  defaultChecked={prefillTipBase === val}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="field">
         <span className="field-label">
@@ -1527,7 +1547,6 @@ function SubmitInner() {
   const [track, setTrack] = useState<Track | null>(null);
   const [preselect, setPreselect] = useState<PreselectVenue | null>(null);
   const [autoStep, setAutoStep] = useState<1 | 2>(1);
-  const [manualStep, setManualStep] = useState<1 | 2>(1);
   const [items, setItems] = useState<EvidenceItem[]>([]);
   const [uploading, setUploading] = useState<EvidenceKind | null>(null);
   const [step1Error, setStep1Error] = useState('');
@@ -1664,7 +1683,6 @@ function SubmitInner() {
     setEditing(null);
     setTrack(null);
     setAutoStep(1);
-    setManualStep(1);
     setStep1Error('');
     setPiiAttested(false);
     setManual({ ...EMPTY_MANUAL });
@@ -1802,7 +1820,6 @@ function SubmitInner() {
 
 
   const AUTO_LABELS = ['Receipt photo', 'Review & submit'];
-  const MANUAL_LABELS = ['Numbers', 'The facts'];
 
   return (
     <div>
@@ -1862,75 +1879,35 @@ function SubmitInner() {
           <p className="page-sub">
             Type the numbers off the receipt — the app does the math. No account needed.
           </p>
-          <Stepper labels={MANUAL_LABELS} step={manualStep} />
-          {manualStep === 1 && (
-            <ManualNumbersStep
-              initial={manual}
-              onContinue={(m) => {
-                setManual(m);
-                setManualStep(2);
-              }}
-              onBack={() => setTrack(null)}
-            />
-          )}
-          {manualStep === 2 && (
-            <FactsForm
-              track="manual"
-              merchants={[]}
-              preselect={preselect}
-              confirmedCount={0}
-              prefillMinTip=""
-              prefillTipBase={manual.base === 'not-sure' ? '' : manual.base}
-              manualFees={manual.fees}
-              buildFactsLine={(tipBase) =>
-                buildFactsLine(
-                  {
-                    subtotal: manual.subtotal,
-                    tax: manual.tax,
-                    tip: manual.tip,
-                    paidTotal: manual.paidTotal,
-                    tipPct: manual.tipPct || manualComputedPct,
-                  },
-                  tipBase,
-                )
-              }
-              receiptBlock={
-                <ReceiptValuesBlock
-                  idPrefix="mr"
-                  values={{
-                    subtotal: manual.subtotal,
-                    tax: manual.tax,
-                    tip: manual.tip,
-                    paidTotal: manual.paidTotal,
-                  }}
-                  onValuesChange={(v) =>
-                    setManual((m) => ({
-                      ...m,
-                      subtotal: v.subtotal,
-                      tax: v.tax,
-                      tip: v.tip,
-                      paidTotal: v.paidTotal,
-                    }))
-                  }
-                  tipPct={manual.tipPct || manualComputedPct}
-                  onTipPctChange={(v) => setManual((m) => ({ ...m, tipPct: v }))}
-                  fees={manual.fees}
-                  onFeesChange={(f) => setManual((m) => ({ ...m, fees: f }))}
-                  hint={
-                    <p className="hint" style={{ marginTop: 0 }}>
-                      From the numbers you typed — fix anything wrong.
-                    </p>
-                  }
-                  feeHint="From the numbers you typed — fix it if wrong."
-                  emptyFeeHint="No extra fees."
-                  renderFeeInputs={false}
-                />
-              }
-              confirmedIds={[]}
-              onBack={() => setManualStep(1)}
-              onSubmitted={() => setDone(true)}
-            />
-          )}
+          <FactsForm
+            track="manual"
+            merchants={[]}
+            preselect={preselect}
+            confirmedCount={0}
+            prefillMinTip=""
+            prefillTipBase=""
+            manualFees={manual.fees}
+            buildFactsLine={(tipBase) =>
+              buildFactsLine(
+                {
+                  subtotal: manual.subtotal,
+                  tax: manual.tax,
+                  tip: manual.tip,
+                  paidTotal: manual.paidTotal,
+                  tipPct: manualComputedPct,
+                },
+                tipBase,
+              )
+            }
+            receiptBlock={
+              <ManualNumbersFields manual={manual} onChange={setManual} />
+            }
+            hideTipBase
+            tipBaseValue={manual.base}
+            confirmedIds={[]}
+            onBack={() => setTrack(null)}
+            onSubmitted={() => setDone(true)}
+          />
         </>
       )}
     </div>
