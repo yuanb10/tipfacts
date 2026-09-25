@@ -706,6 +706,24 @@ p {
   color: var(--muted);
 }
 
+/* Tip-base emphasis inside "They ask": after-tax is the shady case, so it
+   gets a warning pill; pre-tax stays quiet. */
+.askpay-base {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.askpay-base.warn {
+  display: inline-block;
+  background: var(--red-soft);
+  border: 1px solid var(--red);
+  border-radius: 999px;
+  padding: 3px 10px;
+  color: var(--ink);
+}
+
 /* --- The fine print: quiet label/value rows --- */
 .watch-row {
   display: flex;

@@ -81,6 +81,7 @@ function EvidenceThumb({ evidence }: { evidence: PublicEvidence }) {
 /** "They ask X% · People pay Y–Z%" — the one thing a customer opens the page for. */
 function AskPayCard({ detail }: { detail: VenueDetail }) {
   const ask = detail.backedFacts.minPreset;
+  const base = detail.backedFacts.tipBase;
   const pay = detail.receiptStats.tipRange;
   const lo = pay === null ? null : Math.round(pay.min);
   const hi = pay === null ? null : Math.round(pay.max);
@@ -94,6 +95,12 @@ function AskPayCard({ detail }: { detail: VenueDetail }) {
           <>
             <p className="askpay-num">{fmtPct(ask)}</p>
             <p className="askpay-sub">lowest preset on the tip screen</p>
+            {base === 'post-tax' && (
+              <p className="askpay-base warn">⚠️ on the after-tax total</p>
+            )}
+            {base === 'pre-tax' && (
+              <p className="askpay-base">on the pre-tax total</p>
+            )}
           </>
         )}
       </div>
