@@ -39,35 +39,108 @@ ${rows}
 
 fs.mkdirSync(UPLOADS, { recursive: true });
 
-interface SeedImage { file: string; store: string; lines: [string, string][]; tip: string; parsed: ReceiptParsed }
+interface SeedImage {
+  file: string;
+  kind: 'receipt' | 'screen';
+  store: string;
+  lines: [string, string][];
+  tip: string;
+  presets: number[];
+  tipPercentReported: number | null;
+}
 const seedImages: SeedImage[] = [
   {
-    file: 'seed-receipt-1.svg', store: 'DEMO DINER',
+    file: 'seed-receipt-1.svg', kind: 'receipt', store: 'DEMO DINER',
     lines: [['Subtotal', '$41.00'], ['Tax', '$4.31']], tip: '20% 25% 30%',
-    parsed: { merchant: 'DEMO DINER', purchasedAt: null, subtotal: 41.0, tax: 4.31, tip: null, total: null, fees: [], presets: [20, 25, 30], tipPercentReported: null, rawText: null, ocrEngine: 'manual', ocrConfidence: null },
+    presets: [20, 25, 30], tipPercentReported: 18,
   },
   {
-    file: 'seed-receipt-2.svg', store: 'SAMPLE SUSHI',
+    file: 'seed-receipt-4.svg', kind: 'receipt', store: 'DEMO DINER',
+    lines: [['Subtotal', '$38.20'], ['Tax', '$4.01']], tip: '20% 25% 30%',
+    presets: [20, 25, 30], tipPercentReported: 25,
+  },
+  {
+    file: 'seed-receipt-2.svg', kind: 'receipt', store: 'SAMPLE SUSHI',
     lines: [['Subtotal', '$58.50'], ['Tax', '$6.14']], tip: '20% 22% 25%',
-    parsed: { merchant: 'SAMPLE SUSHI', purchasedAt: null, subtotal: 58.5, tax: 6.14, tip: null, total: null, fees: [], presets: [20, 22, 25], tipPercentReported: null, rawText: null, ocrEngine: 'manual', ocrConfidence: null },
+    presets: [20, 22, 25], tipPercentReported: 22,
   },
   {
-    file: 'seed-receipt-3.svg', store: 'TEST TACO TRUCK',
+    file: 'seed-receipt-5.svg', kind: 'receipt', store: 'PRETEND PIZZA',
+    lines: [['Subtotal', '$24.00'], ['Tax', '$2.52']], tip: '25% 30% 35%',
+    presets: [25, 30, 35], tipPercentReported: 30,
+  },
+  {
+    file: 'seed-receipt-3.svg', kind: 'receipt', store: 'TEST TACO TRUCK',
     lines: [['Subtotal', '$12.75'], ['Tax', '$1.34']], tip: '30% 35% 40%',
-    parsed: { merchant: 'TEST TACO TRUCK', purchasedAt: null, subtotal: 12.75, tax: 1.34, tip: null, total: null, fees: [], presets: [30, 35, 40], tipPercentReported: null, rawText: null, ocrEngine: 'manual', ocrConfidence: null },
+    presets: [30, 35, 40], tipPercentReported: 35,
+  },
+  {
+    file: 'seed-receipt-6.svg', kind: 'receipt', store: 'TEST TACO TRUCK',
+    lines: [['Subtotal', '$15.40'], ['Tax', '$1.62']], tip: '30% 35% 40%',
+    presets: [30, 35, 40], tipPercentReported: 40,
+  },
+  {
+    file: 'seed-screen-1.svg', kind: 'screen', store: 'DEMO DINER',
+    lines: [], tip: '', presets: [20, 25, 30], tipPercentReported: null,
+  },
+  {
+    file: 'seed-screen-2.svg', kind: 'screen', store: 'SAMPLE SUSHI',
+    lines: [], tip: '', presets: [20, 22, 25], tipPercentReported: null,
+  },
+  {
+    file: 'seed-screen-3.svg', kind: 'screen', store: 'PRETEND PIZZA',
+    lines: [], tip: '', presets: [25, 30, 35], tipPercentReported: null,
+  },
+  {
+    file: 'seed-screen-4.svg', kind: 'screen', store: 'TEST TACO TRUCK',
+    lines: [], tip: '', presets: [30, 35, 40], tipPercentReported: null,
   },
 ];
+
+// --- placeholder "tip screen" SVGs (fictional, no PII) -----------------------
+function screenSvg(store: string, presets: number[]): string {
+  const btns = presets
+    .map(
+      (p, i) =>
+        `<rect x="${24 + i * 88}" y="120" width="80" height="56" rx="10" fill="#eef4ff" stroke="#0a6cff"/>` +
+        `<text x="${64 + i * 88}" y="155" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#0a6cff">${p}%</text>`,
+    )
+    .join('\n');
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="400">
+<rect width="300" height="400" rx="18" fill="#2b2b2e"/>
+<text x="150" y="48" font-family="sans-serif" font-size="17" font-weight="bold" text-anchor="middle" fill="#fff">${store}</text>
+<text x="150" y="88" font-family="sans-serif" font-size="15" text-anchor="middle" fill="#ccc">Add a tip?</text>
+${btns}
+<text x="150" y="380" font-family="sans-serif" font-size="12" fill="#999" text-anchor="middle">seed placeholder image</text>
+</svg>`;
+}
+
 const evidenceByFile = new Map<string, Evidence>();
 for (const img of seedImages) {
-  fs.writeFileSync(path.join(UPLOADS, img.file), receiptSvg(img.store, img.lines, img.tip), 'utf8');
+  const art =
+    img.kind === 'screen' ? screenSvg(img.store, img.presets) : receiptSvg(img.store, img.lines, img.tip);
+  fs.writeFileSync(path.join(UPLOADS, img.file), art, 'utf8');
   const pub = '/uploads/' + img.file;
   const ev = await storage.createEvidence({
-    type: 'receipt',
+    type: img.kind,
     originalPath: pub, // placeholder art, no PII — safe to serve
     redactedPath: pub,
     redactionStatus: 'confirmed',
     userConfirmed: true,
-    parsed: img.parsed,
+    parsed: {
+      merchant: img.store,
+      purchasedAt: null,
+      subtotal: null,
+      tax: null,
+      tip: null,
+      total: null,
+      fees: [],
+      presets: img.presets,
+      tipPercentReported: img.tipPercentReported,
+      rawText: null,
+      ocrEngine: 'manual',
+      ocrConfidence: null,
+    } satisfies ReceiptParsed,
     isSeed: true,
   });
   evidenceByFile.set(img.file, ev);
@@ -75,7 +148,7 @@ for (const img of seedImages) {
 
 // --- venues + reports -------------------------------------------------------
 interface V { name: string; city: string; area: string; serviceType: 'counter'|'table'|'takeout'|'nonfood'; screen: string; presets: string; tipBase: 'pre-tax'|'post-tax'|'not-sure'; fees: string[] }
-interface R { at: string; photo?: string; notes?: string; presets?: string; tipBase?: V['tipBase']; fees?: string[]; serviceType?: V['serviceType']; screen?: string; area?: string }
+interface R { at: string; photo?: string; screenPhoto?: string; guilt?: 'yes' | 'no' | 'skip'; notes?: string; presets?: string; tipBase?: V['tipBase']; fees?: string[]; serviceType?: V['serviceType']; screen?: string; area?: string }
 
 const venues: V[] = [
   { name: 'Demo Diner', city: 'Seattle', area: 'Capitol Hill', serviceType: 'counter', screen: 'staff-held', presets: '20%, 25%, 30%', tipBase: 'post-tax', fees: ['service-charge'] },
@@ -89,10 +162,10 @@ const venues: V[] = [
 ];
 
 const reportLists: R[][] = [
-  [ // Demo Diner — 3 reports, 2 photo-backed
-    { at: '2026-09-02T12:10:00', photo: 'seed-receipt-1.svg', notes: 'Cashier held the tablet the whole time. Post-tax total used for the tip math.' },
-    { at: '2026-09-08T18:40:00', presets: '20 / 25 / 30' },
-    { at: '2026-09-15T13:05:00', photo: 'seed-receipt-1.svg', notes: 'Same as last time. 3% service charge printed on the receipt.' },
+  [ // Demo Diner — 3 reports, photo + screen backed
+    { at: '2026-09-02T12:10:00', photo: 'seed-receipt-1.svg', screenPhoto: 'seed-screen-1.svg', guilt: 'yes', notes: 'Cashier held the tablet the whole time. Post-tax total used for the tip math.' },
+    { at: '2026-09-08T18:40:00', presets: '20 / 25 / 30', screenPhoto: 'seed-screen-1.svg', guilt: 'no' },
+    { at: '2026-09-15T13:05:00', photo: 'seed-receipt-4.svg', guilt: 'yes', notes: 'Same as last time. 3% service charge printed on the receipt.' },
   ],
   [ // Fictional Pho House — 4 reports, text only
     { at: '2026-08-28T19:20:00' },
@@ -101,7 +174,7 @@ const reportLists: R[][] = [
     { at: '2026-09-17T13:45:00', presets: '18%, 20%, 22%' },
   ],
   [ // Pretend Pizza Co. — 2 reports, 1 photo-backed
-    { at: '2026-09-10T17:55:00', photo: 'seed-receipt-2.svg', notes: 'Pickup order and the reader still prompted for a tip, calculated on the taxed total.' },
+    { at: '2026-09-10T17:55:00', photo: 'seed-receipt-5.svg', screenPhoto: 'seed-screen-3.svg', notes: 'Pickup order and the reader still prompted for a tip, calculated on the taxed total.' },
     { at: '2026-09-16T18:20:00' },
   ],
   [ // Mock Mart — 5 reports, text only
@@ -117,7 +190,7 @@ const reportLists: R[][] = [
     { at: '2026-09-14T13:10:00' },
   ],
   [ // Sample Sushi Spot — 3 reports, 1 photo-backed
-    { at: '2026-09-04T19:45:00', photo: 'seed-receipt-2.svg', notes: 'Tip suggested on the post-tax total.' },
+    { at: '2026-09-04T19:45:00', photo: 'seed-receipt-2.svg', screenPhoto: 'seed-screen-2.svg', notes: 'Tip suggested on the post-tax total.' },
     { at: '2026-09-12T20:05:00' },
     { at: '2026-09-18T19:30:00' },
   ],
@@ -127,10 +200,10 @@ const reportLists: R[][] = [
   ],
   [ // Test Taco Truck — 6 reports, 2 photo-backed
     { at: '2026-08-27T12:20:00' },
-    { at: '2026-09-02T12:35:00', photo: 'seed-receipt-3.svg', notes: '30% as the lowest option at a taco truck is wild.' },
+    { at: '2026-09-02T12:35:00', photo: 'seed-receipt-3.svg', screenPhoto: 'seed-screen-4.svg', notes: '30% as the lowest option at a taco truck is wild.' },
     { at: '2026-09-08T13:00:00' },
     { at: '2026-09-11T12:45:00' },
-    { at: '2026-09-15T18:10:00', photo: 'seed-receipt-3.svg' },
+    { at: '2026-09-15T18:10:00', photo: 'seed-receipt-6.svg' },
     { at: '2026-09-18T12:30:00', notes: 'Service charge on a takeout window order.' },
   ],
 ];
@@ -145,6 +218,10 @@ for (let vi = 0; vi < venues.length; vi++) {
       const ev = evidenceByFile.get(r.photo);
       if (ev) evidenceIds.push(ev.id);
     }
+    if (r.screenPhoto) {
+      const ev = evidenceByFile.get(r.screenPhoto);
+      if (ev) evidenceIds.push(ev.id);
+    }
     const report = await storage.createReport({
       venueId: venue.id,
       venueName: v.name,
@@ -155,7 +232,7 @@ for (let vi = 0; vi < venues.length; vi++) {
       presets: r.presets ?? v.presets,
       tipBase: r.tipBase ?? v.tipBase,
       fees: r.fees ?? v.fees,
-      guilt: 'skip',
+      guilt: r.guilt ?? 'skip',
       experienceNote: '',
       notes: r.notes ?? '',
       evidenceIds,
