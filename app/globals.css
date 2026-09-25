@@ -1026,6 +1026,16 @@ details.fold summary {
   min-height: 54px;
 }
 
+/* Three-up row: compact labels so three buttons fit side by side. */
+.btn-row.btn-row-3 .btn {
+  padding: 12px 6px;
+  font-size: 0.85rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
 /* ---------- Forms ---------- */
 
 .form-card {

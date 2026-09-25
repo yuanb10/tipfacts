@@ -1774,7 +1774,7 @@ function SubmitInner() {
               I blacked out all personal information on this photo — card details, names,
               authorization codes, contact info, and barcodes.
             </label>
-            <div className="btn-row btn-row-split" style={{ marginTop: 8 }}>
+            <div className="btn-row btn-row-split btn-row-3" style={{ marginTop: 8 }}>
               <button
                 type="button"
                 className="btn btn-secondary"
@@ -1797,20 +1797,25 @@ function SubmitInner() {
               >
                 Remove
               </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!piiAttested}
+                onClick={() => setAutoStep(2)}
+              >
+                Upload my receipt
+              </button>
             </div>
           </div>
         )}
 
-        <div className="btn-row" style={{ marginTop: 16 }}>
-          <button
-            type="button"
-            className="btn btn-primary"
-            disabled={!receipt || !piiAttested}
-            onClick={() => setAutoStep(2)}
-          >
-            {receipt ? 'Read my receipt' : 'Add a receipt photo to continue'}
-          </button>
-        </div>
+        {!receipt && (
+          <div className="btn-row" style={{ marginTop: 16 }}>
+            <button type="button" className="btn btn-primary" disabled>
+              Add a receipt photo to continue
+            </button>
+          </div>
+        )}
       </div>
     );
   }
