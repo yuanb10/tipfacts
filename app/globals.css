@@ -651,6 +651,159 @@ p {
   margin: 16px 0 8px;
 }
 
+/* ============================================================
+   Tip facts card — the venue page hero. One card, three answers:
+   question (small caps), big answer, one quiet sub-line. No chips.
+   ============================================================ */
+.tipfacts-card {
+  background: var(--surface);
+  border: 1px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+  padding: 6px 20px 10px;
+  margin: 18px 0 20px;
+}
+
+.tipfact {
+  padding: 16px 0 14px;
+  border-top: 1px solid var(--line);
+}
+
+.tipfact:first-child {
+  border-top: none;
+}
+
+.tipfact-q {
+  margin: 0 0 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.tipfact-a {
+  margin: 0;
+  font-size: clamp(1.9rem, 7vw, 2.6rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+}
+
+.tipfact-a-sm {
+  font-size: clamp(1.25rem, 5vw, 1.6rem);
+}
+
+.tipfact-a-sub {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0;
+}
+
+.tipfact-sub {
+  margin: 6px 0 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.tipfact-empty {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* Muted verified marker — typography, not a chip. */
+.vmark {
+  color: var(--green);
+  font-size: 0.8rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.warn-inline {
+  color: var(--red);
+}
+
+/* Compact score: number + drivers, machinery behind folds. */
+.score-num {
+  margin: 0;
+  font-size: clamp(2.6rem, 10vw, 3.6rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+
+.score-denom {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.score-drivers {
+  list-style: none;
+  margin: 14px 0 4px;
+  padding: 0;
+}
+
+.score-drivers li {
+  padding: 8px 0;
+  border-top: 1px dashed var(--line);
+  font-size: 0.95rem;
+}
+
+.score-drivers .pts {
+  font-weight: 800;
+  color: var(--red);
+  margin-right: 10px;
+}
+
+/* Collapsible machinery (score breakdown, rubric, history). */
+details.fold {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--surface);
+}
+
+details.fold.section-fold {
+  margin-bottom: 16px;
+}
+
+details.fold summary {
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 0.95rem;
+}
+
+/* Quiet one-line rows for reports, stats, history. */
+.report-line {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.report-line:first-of-type {
+  border-top: none;
+}
+
+.report-note {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.quiet-foot {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 4px 0 20px;
+}
+
 /* Score breakdown bars */
 .score-bar-row {
   display: grid;

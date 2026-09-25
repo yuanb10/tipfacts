@@ -19,6 +19,14 @@ import {
  * swapping in a paid-tier key in GEMINI_API_KEY — the code deliberately
  * avoids paid-tier-only features (no batch API, no context caching).
  *
+ * Fallback provider (Bo, 2026-09-23): when the whole Gemini chain fails,
+ * the route tries an OpenAI-compatible endpoint (OpenRouter by default,
+ * free Qwen VL tier) before giving up to the manual track. Same prompt,
+ * same validation contract — only the wire format differs. Configure with
+ * OPENROUTER_API_KEY (+ optional OPENROUTER_MODEL / OPENROUTER_BASE_URL).
+ * Free-tier note: assume prompts may be used for training; acceptable for
+ * the same reason — only the already-redacted image is ever sent.
+ *
  * Contract (built against by the /submit UI):
  * - Request: multipart/form-data, field `image` = redacted JPEG file
  *   (single), or `images` = up to 4 redacted image files (multi-slip:
@@ -77,9 +85,77 @@ function extractModelText(json: unknown): string | null {
   return text ? text : null;
 }
 
+/**
+ * OpenAI-compatible extraction (OpenRouter free Qwen VL tier by default).
+ * Same EXTRACTION_PROMPT, same downstream validation — only the wire format
+ * differs from the Gemini path above.
+ */
+async function extractViaOpenAICompat(opts: {
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+  images: Array<{ mimeType: string; data: string }>; // base64, redacted only
+}): Promise<{ ok: true; text: string } | { ok: false; status: number | null; error: string }> {
+  const content: unknown[] = [{ type: 'text', text: EXTRACTION_PROMPT }];
+  for (const img of opts.images) {
+    content.push({
+      type: 'image_url',
+      image_url: { url: `data:${img.mimeType};base64,${img.data}` },
+    });
+  }
+  let res: Response | null = null;
+  try {
+    res = await fetch(`${opts.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${opts.apiKey}`,
+        // OpenRouter attribution headers (harmless elsewhere).
+        'HTTP-Referer': 'https://github.com/yuanb10/tipfacts',
+        'X-Title': 'TipFacts',
+      },
+      body: JSON.stringify({
+        model: opts.model,
+        messages: [{ role: 'user', content }],
+        temperature: 0.2,
+        max_tokens: 2000,
+        response_format: { type: 'json_object' },
+      }),
+    });
+  } catch (e) {
+    return { ok: false, status: null, error: e instanceof Error ? e.message : 'network error' };
+  }
+  if (!res.ok) {
+    return { ok: false, status: res.status, error: `HTTP ${res.status}` };
+  }
+  let json: unknown;
+  try {
+    json = (await res.json()) as unknown;
+  } catch {
+    return { ok: false, status: res.status, error: 'unreadable response' };
+  }
+  const rawContent = (json as { choices?: Array<{ message?: { content?: unknown } }> })
+    ?.choices?.[0]?.message?.content;
+  const text =
+    typeof rawContent === 'string'
+      ? rawContent
+      : Array.isArray(rawContent)
+        ? rawContent
+            .filter(
+              (p): p is { type: string; text?: unknown } =>
+                typeof p === 'object' && p !== null && (p as { type?: unknown }).type === 'text',
+            )
+            .map((p) => (typeof p.text === 'string' ? p.text : ''))
+            .join('')
+        : '';
+  if (!text.trim()) return { ok: false, status: res.status, error: 'empty response' };
+  return { ok: true, text: text.trim() };
+}
+
 export async function POST(req: NextRequest): Promise<NextResponse> {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
+  const orKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey && !orKey) {
     return fallback('Receipt extraction is not configured right now.');
   }
   // Model fallback chain: same price class, different capacity pools. We saw
@@ -135,55 +211,95 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
   });
 
   // Try the primary model with retries, then fall through to the next model
-  // in the chain before giving up to the manual track.
+  // in the chain before giving up to the manual track. Skipped entirely when
+  // no Gemini key is configured (OpenRouter-only setups).
   let upstream: Response | null = null;
   let lastStatus: number | null = null;
   let modelFailed = false;
 
-  for (const model of models) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-    upstream = null;
-    modelFailed = false;
-    for (let attempt = 0; ; attempt++) {
+  if (apiKey) {
+    for (const model of models) {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
       upstream = null;
-      let networkFailed = false;
-      try {
-        upstream = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
-          },
-          body: requestBody,
-        });
-      } catch {
-        networkFailed = true;
+      modelFailed = false;
+      for (let attempt = 0; ; attempt++) {
+        upstream = null;
+        let networkFailed = false;
+        try {
+          upstream = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: requestBody,
+          });
+        } catch {
+          networkFailed = true;
+        }
+        const retryable = networkFailed || (upstream !== null && RETRYABLE.has(upstream.status));
+        if (!retryable || attempt >= MAX_RETRIES) break;
+        await sleep(retryDelayMs(attempt, upstream));
       }
-      const retryable = networkFailed || (upstream !== null && RETRYABLE.has(upstream.status));
-      if (!retryable || attempt >= MAX_RETRIES) break;
-      await sleep(retryDelayMs(attempt, upstream));
+      if (upstream && upstream.ok) break; // success — stop the chain
+      if (upstream) lastStatus = upstream.status;
+      modelFailed = true;
+      console.error(
+        `[receipt/extract] Gemini model ${model} failed (HTTP ${lastStatus ?? 'network'}), trying next in chain`,
+      );
     }
-    if (upstream && upstream.ok) break; // success — stop the chain
-    if (upstream) lastStatus = upstream.status;
-    modelFailed = true;
-    console.error(
-      `[receipt/extract] Gemini model ${model} failed (HTTP ${lastStatus ?? 'network'}), trying next in chain`,
-    );
+  } else {
+    modelFailed = true; // no Gemini key — go straight to the fallback provider
   }
 
-  if (!upstream || modelFailed) {
-    if (lastStatus === 429) {
-      return fallback('The extraction service is busy right now. Please try the manual entry.');
+  // Fallback provider: OpenAI-compatible (OpenRouter free Qwen tier by
+  // default). Reached when the whole Gemini chain failed, or when no Gemini
+  // key is configured at all.
+  let compatText: string | null = null;
+  if ((!upstream || modelFailed) && orKey) {
+    const orModel = process.env.OPENROUTER_MODEL || 'qwen/qwen2.5-vl-32b-instruct:free';
+    const orBase = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+    const compatImages = inlineParts.map((p) => ({
+      mimeType: p.inlineData.mimeType,
+      data: p.inlineData.data,
+    }));
+    for (let attempt = 0; ; attempt++) {
+      const r = await extractViaOpenAICompat({
+        baseUrl: orBase,
+        apiKey: orKey,
+        model: orModel,
+        images: compatImages,
+      });
+      const retryable = !r.ok && (r.status === null || RETRYABLE.has(r.status));
+      if (!retryable || attempt >= MAX_RETRIES) {
+        if (r.ok) {
+          compatText = r.text;
+        } else {
+          if (r.status !== null) lastStatus = r.status;
+          console.error(
+            `[receipt/extract] OpenAI-compat model ${orModel} failed (${r.error}), giving up`,
+          );
+        }
+        break;
+      }
+      await sleep(retryDelayMs(attempt, null));
     }
-    return fallback('The extraction service failed. Please try again.');
   }
 
-  let modelText: string | null;
-  try {
-    const json: unknown = await upstream.json();
-    modelText = extractModelText(json);
-  } catch {
-    return fallback('The extraction service returned an unreadable response.');
+  let modelText: string | null = compatText;
+  if (modelText === null) {
+    if (!upstream || modelFailed) {
+      if (lastStatus === 429) {
+        return fallback('The extraction service is busy right now. Please try the manual entry.');
+      }
+      return fallback('The extraction service failed. Please try again.');
+    }
+    try {
+      const json: unknown = await upstream.json();
+      modelText = extractModelText(json);
+    } catch {
+      return fallback('The extraction service returned an unreadable response.');
+    }
   }
   if (!modelText) {
     return fallback('The extraction service returned no text.');
