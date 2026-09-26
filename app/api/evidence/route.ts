@@ -1,46 +1,37 @@
 /**
- * POST /api/evidence — upload a receipt/screen photo for PII redaction.
+ * POST /api/evidence — upload a receipt/screen photo for a report.
+ *
+ * The client redacts PII on-device (RedactionCanvas) BEFORE uploading, so
+ * the bytes we receive here are already the user-redacted image — the true
+ * original never leaves the reporter's device. We normalize the upload to
+ * the storage spec (grayscale JPEG, longest side ≤1200px, quality 80) and
+ * store it under data/uploads/; it is served at
+ * /api/uploads/<id>-redacted.jpg (a route handler, because the production
+ * server doesn't pick up files added to public/ at runtime). The venue page
+ * shows it once the uploader confirms the evidence.
  *
  * Multipart: { photo: File, type: 'receipt' | 'screen' }
- * Originals are saved to data/uploads-private/ (gitignored, NEVER web-served).
- * When tesseract is available: OCR → detect PII boxes → render a blacked-out
- * public copy to public/uploads/<id>-redacted.png → extract parsed values.
- * Without tesseract: the evidence goes to the 'manual' path — the uploader
- * reviews/redacts by hand in the confirm UI. OCR failures are stored as
- * 'failed', never papered over.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
 import fs from 'fs';
 import path from 'path';
 import sharp from 'sharp';
-import { getStorage, newId } from '@/lib/storage';
-import type { Evidence, EvidenceType, ReceiptParsed } from '@/lib/storage';
-import { isOcrAvailable, runOcr } from '@/lib/ocr';
-import { findPiiBoxes, extractParsedValues, renderRedacted } from '@/lib/redact';
+import { getStorage } from '@/lib/storage';
+import type { Evidence, EvidenceType } from '@/lib/storage';
 
 export const runtime = 'nodejs';
 
 const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
 const TYPES = new Set<EvidenceType>(['receipt', 'screen']);
 
-const EXT_BY_MIME: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-  'image/gif': 'gif',
-  'image/heic': 'heic',
-  'image/heif': 'heif',
-};
-
-function publicEvidenceShape(ev: Evidence, ocrAvailable: boolean) {
+function publicEvidenceShape(ev: Evidence) {
   return {
     id: ev.id,
     type: ev.type,
-    redactedUrl: ev.redactedPath, // '/uploads/<id>-redacted.png' or null
+    redactedUrl: ev.redactedPath, // '/api/uploads/<id>-redacted.jpg'
     redactionStatus: ev.redactionStatus,
     parsed: ev.parsed,
-    ocrAvailable,
   };
 }
 
@@ -55,7 +46,7 @@ export async function POST(req: NextRequest) {
   }
 
   const type = form.get('type');
-  if (type !== 'receipt' && type !== 'screen') {
+  if (!TYPES.has(type as EvidenceType)) {
     return NextResponse.json(
       { ok: false, error: "type must be 'receipt' or 'screen'." },
       { status: 400 },
@@ -76,78 +67,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, error: 'photo is empty.' }, { status: 400 });
   }
 
-  const id = newId();
-  const ext = EXT_BY_MIME[photo.type] ?? 'png';
-  const privateDir = path.join(process.cwd(), 'data', 'uploads-private');
-  const publicDir = path.join(process.cwd(), 'public', 'uploads');
-  await fs.promises.mkdir(privateDir, { recursive: true });
-  await fs.promises.mkdir(publicDir, { recursive: true });
-
-  const originalPath = path.join('data', 'uploads-private', `${id}.${ext}`);
-  const originalAbs = path.join(process.cwd(), originalPath);
-  const buf = Buffer.from(await photo.arrayBuffer());
-  await fs.promises.writeFile(originalAbs, buf);
-
-  let evidence: Evidence = await storage.createEvidence({
+  // Create the evidence row first so the stored file is named after the
+  // evidence id. Paths are filled in once the upload is normalized below.
+  let evidence = await storage.createEvidence({
     type: type as EvidenceType,
-    originalPath,
-    redactionStatus: 'pending',
+    originalPath: '',
+    redactionStatus: 'manual',
     userConfirmed: false,
     parsed: null,
   });
 
-  const ocrAvailable = isOcrAvailable();
+  const id = evidence.id;
+  const uploadDir = path.join(process.cwd(), 'data', 'uploads');
+  await fs.promises.mkdir(uploadDir, { recursive: true });
 
-  if (!ocrAvailable) {
-    // No tesseract: manual path. Uploader reviews/redacts in the confirm UI.
-    evidence = await storage.updateEvidence(evidence.id, {
-      redactionStatus: 'manual',
-      parsed: null,
-    });
-    return NextResponse.json({
-      ok: true,
-      evidence: publicEvidenceShape(evidence, false),
-    });
-  }
-
+  // Normalize the user-redacted upload to the storage spec. This is the only
+  // server copy of the image.
+  const fileName = `${id}-redacted.jpg`;
+  const absPath = path.join(uploadDir, fileName);
   try {
-    const ocr = await runOcr(originalAbs);
-    if (!ocr) {
-      evidence = await storage.updateEvidence(evidence.id, {
-        redactionStatus: 'failed',
-        parsed: null,
-      });
-      return NextResponse.json({
-        ok: true,
-        evidence: publicEvidenceShape(evidence, true),
-      });
-    }
-
-    const meta = await sharp(originalAbs).metadata();
-    const boxes = findPiiBoxes(ocr.words, meta.width ?? 0, meta.height ?? 0);
-    const redactedAbs = path.join(publicDir, `${id}-redacted.png`);
-    await renderRedacted(originalAbs, boxes, redactedAbs);
-
-    const parsed: ReceiptParsed = extractParsedValues(ocr.words, ocr.rawText);
-    parsed.ocrConfidence = ocr.meanConfidence;
-
-    evidence = await storage.updateEvidence(evidence.id, {
-      redactedPath: `/uploads/${id}-redacted.png`,
-      redactionStatus: 'pending',
-      parsed,
-    });
-    return NextResponse.json({
-      ok: true,
-      evidence: publicEvidenceShape(evidence, true),
-    });
+    const buf = Buffer.from(await photo.arrayBuffer());
+    await sharp(buf)
+      .grayscale()
+      .resize(1200, 1200, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 80 })
+      .toFile(absPath);
   } catch {
-    evidence = await storage.updateEvidence(evidence.id, {
-      redactionStatus: 'failed',
-      parsed: null,
-    });
-    return NextResponse.json({
-      ok: true,
-      evidence: publicEvidenceShape(evidence, true),
-    });
+    return NextResponse.json(
+      { ok: false, error: 'Could not read the photo. Try another image.' },
+      { status: 400 },
+    );
   }
+
+  const relPath = path.join('data', 'uploads', fileName);
+  evidence = await storage.updateEvidence(id, {
+    // v1: the client only uploads the user-redacted image, so there is no
+    // pre-redaction copy server-side — both paths point at the redacted file.
+    originalPath: relPath,
+    redactedPath: `/api/uploads/${fileName}`,
+  });
+
+  return NextResponse.json({ ok: true, evidence: publicEvidenceShape(evidence) });
 }

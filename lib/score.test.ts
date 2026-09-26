@@ -82,8 +82,6 @@ function parsedWith(opts: {
     presets: opts.presets ?? [],
     tipPercentReported: null,
     rawText: null,
-    ocrEngine: 'manual',
-    ocrConfidence: null,
   };
 }
 

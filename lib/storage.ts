@@ -18,8 +18,9 @@ export type EvidenceType = 'receipt' | 'screen';
 export type ModerationStatus = 'pending' | 'approved' | 'rejected';
 export type RedactionStatus = 'pending' | 'confirmed' | 'failed' | 'manual';
 
-/** Values parsed from a receipt/screen photo. Never fabricated: ocrEngine is
- *  'tesseract' when machine-read, 'manual' when the uploader typed them in. */
+/** Values for a receipt/screen photo. Never fabricated: every value is either
+ *  typed by the uploader or extracted by the VLM and then confirmed by the
+ *  uploader. tipPercentReported is always derived from tip/subtotal. */
 export interface ReceiptParsed {
   merchant: string | null;
   purchasedAt: string | null;
@@ -31,18 +32,18 @@ export interface ReceiptParsed {
   presets: number[];
   tipPercentReported: number | null;
   rawText: string | null;
-  ocrEngine: 'tesseract' | 'manual' | null;
-  ocrConfidence: number | null; // 0-100 mean word confidence, tesseract only
 }
 
-/** One photo: original is NEVER served publicly; only the redacted copy is,
- *  and only after the uploader confirms it. */
+/** One photo. The only server copy is the user-redacted image; it is shown
+ *  publicly only after the uploader confirms it. */
 export interface Evidence {
   id: string;
   reportId: string | null;
   type: EvidenceType;
-  originalPath: string; // e.g. data/uploads-private/<id>.png — not web-served
-  redactedPath: string | null; // e.g. /uploads/<id>-redacted.png — public
+  // v1: the client only uploads the user-redacted image, so this is the
+  // redacted file itself — the true original never leaves the device.
+  originalPath: string;
+  redactedPath: string | null; // e.g. /api/uploads/<id>-redacted.jpg
   redactionStatus: RedactionStatus;
   userConfirmed: boolean;
   parsed: ReceiptParsed | null;

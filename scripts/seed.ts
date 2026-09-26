@@ -138,8 +138,6 @@ for (const img of seedImages) {
       presets: img.presets,
       tipPercentReported: img.tipPercentReported,
       rawText: null,
-      ocrEngine: 'manual',
-      ocrConfidence: null,
     } satisfies ReceiptParsed,
     isSeed: true,
   });

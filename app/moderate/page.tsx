@@ -112,10 +112,9 @@ function EvidenceCard({ evidence }: { evidence: Evidence }) {
           {parsed.presets.length > 0 && (
             <div className="fact-row"><dt>Presets</dt><dd>{parsed.presets.map((p) => `${p}%`).join(', ')}</dd></div>
           )}
-          {parsed.tipPercentReported !== null && (
+          {parsed.tipPercentReported != null && (
             <div className="fact-row"><dt>Tip % reported</dt><dd>{parsed.tipPercentReported}%</dd></div>
           )}
-          <div className="fact-row"><dt>OCR engine</dt><dd>{parsed.ocrEngine ?? '—'}</dd></div>
         </dl>
       ) : (
         <p className="report-meta">No parsed values.</p>

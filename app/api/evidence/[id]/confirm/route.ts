@@ -1,15 +1,16 @@
 /**
  * POST /api/evidence/[id]/confirm — the uploader reviews the redacted copy
- * (or the manual flow when OCR was unavailable) and confirms it is safe.
+ * and confirms it is safe to publish.
  *
  * Body: { confirmed: boolean, attestedNoPii?: boolean, parsed?: Partial<ReceiptParsed> }
  *
- * - confirmed=true requires redactionStatus 'pending' or 'manual'. A 'failed'
- *   OCR can still be confirmed if the uploader attests the image contains no
- *   PII (attestedNoPii) — it is then reclassified as 'manual'.
+ * - confirmed=true requires redactionStatus 'pending' or 'manual', and the
+ *   uploader's attestation that the image contains no PII (the redaction was
+ *   done by hand, on-device, before upload).
  * - confirmed=false returns the evidence unchanged (review declined).
- * - parsed corrections merge into the existing parsed object; ocrEngine is
- *   never overwritten (it records how the values were originally produced).
+ * - parsed corrections merge into the existing parsed object. When the
+ *   corrected values include a tip and a subtotal, the pre-tax tip percentage
+ *   is derived from them (never trusted from an external reader).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -50,24 +51,32 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ id:
         ok: false,
         error:
           redactionStatus === 'failed'
-            ? 'OCR failed on this photo. Attest that it contains no PII (attestedNoPii: true) to confirm, or re-upload.'
+            ? 'This photo could not be read. Attest that it contains no PII (attestedNoPii: true) to confirm, or re-upload.'
             : 'This evidence is already confirmed.',
       },
       { status: 400 },
     );
   }
 
-  // Merge parsed corrections over the existing parsed object, keeping
-  // ocrEngine as-is (it records the provenance of the original read).
+  // Merge parsed corrections over the existing parsed object. When the
+  // corrected values include a tip and a subtotal, derive the pre-tax tip
+  // percentage from them — arithmetic on confirmed inputs, never fabricated.
   let parsed = evidence.parsed;
   if (body.parsed && typeof body.parsed === 'object') {
-    const { ocrEngine: _ignored, ...corrections } = body.parsed;
-    parsed = { ...(parsed ?? nullParsed()), ...corrections, ocrEngine: parsed?.ocrEngine ?? 'manual' };
+    parsed = { ...(parsed ?? nullParsed()), ...body.parsed };
+  }
+  if (
+    parsed &&
+    parsed.tipPercentReported == null &&
+    parsed.tip != null &&
+    parsed.subtotal != null &&
+    parsed.subtotal > 0
+  ) {
+    parsed.tipPercentReported = Math.round((parsed.tip / parsed.subtotal) * 1000) / 10;
   }
 
   const updated = await storage.updateEvidence(id, {
     userConfirmed: true,
-    // 'failed' + attestedNoPii reclassifies as manual provenance.
     redactionStatus: 'confirmed',
     parsed,
   });
@@ -87,7 +96,5 @@ function nullParsed(): ReceiptParsed {
     presets: [],
     tipPercentReported: null,
     rawText: null,
-    ocrEngine: 'manual',
-    ocrConfidence: null,
   };
 }

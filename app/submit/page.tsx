@@ -31,7 +31,7 @@ import RedactionCanvas from '@/components/RedactionCanvas';
  *
  * Evidence API contracts (sibling agent):
  *   POST /api/evidence {photo, type} ->
- *     { ok, evidence: { id, type, redactedUrl, redactionStatus, parsed, ocrAvailable } }
+ *     { ok, evidence: { id, type, redactedUrl, redactionStatus, parsed } }
  *   POST /api/evidence/[id]/confirm {confirmed, attestedNoPii?, parsed?} ->
  *     { ok, evidence }
  * Receipt-extract API contract (teammate):
@@ -71,7 +71,6 @@ interface EvidenceItem {
   type: EvidenceKind;
   redactedUrl: string | null;
   redactionStatus: string;
-  ocrAvailable: boolean;
   confirmed: boolean;
   attested: boolean;
   draft: ParsedDraft;
@@ -81,8 +80,8 @@ interface EvidenceItem {
    * were uploaded to /api/evidence. Only these bytes ever go to
    * /api/receipt/extract; the original photo is never sent anywhere. */
   redactedFile: File | null;
-  /** Local object URL for the redacted export — the preview source when the
-   * server has no redacted copy (e.g. no OCR available locally). */
+  /** Local object URL for the redacted export — the preview source before the
+   * server copy is ready. */
   localPreviewUrl: string;
 }
 
@@ -225,7 +224,7 @@ interface PreselectVenue {
 
 /**
  * Venue picker: users never type a full venue name from scratch.
- *   - OCR merchant pre-fill: fuzzy-matches the receipt's merchant against
+ *   - VLM merchant pre-fill: fuzzy-matches the receipt's merchant against
  *     known venues and proposes the best hit for confirmation.
  *   - VLM venue proposal: passed in via `merchants` as a separate prefill source.
  *   - ?venueId= preselect: the directory's "be the first to report" CTA lands
@@ -1619,7 +1618,6 @@ function SubmitInner() {
           type: kind,
           redactedUrl: ev.redactedUrl ?? null,
           redactionStatus: String(ev.redactionStatus ?? 'pending'),
-          ocrAvailable: ev.ocrAvailable !== false,
           confirmed: false,
           attested: false,
           draft: draftFromParsed(ev.parsed as SiblingParsed | null | undefined),
@@ -1628,7 +1626,7 @@ function SubmitInner() {
           // Stash the redacted export: the extract step sends these same bytes
           // to /api/receipt/extract. The original photo never leaves the device.
           redactedFile: file,
-          // Local preview: the server only has a redacted copy when OCR ran.
+          // Local preview: the server's redacted copy may lag the upload by a beat.
           localPreviewUrl: URL.createObjectURL(file),
         },
       ]);
@@ -1714,8 +1712,7 @@ function SubmitInner() {
   /* ------------------------------------------- auto: step 1 receipt + PII check */
   function renderEvidenceStep() {
     const receipt = items.find((it) => it.type === 'receipt') ?? null;
-    // Prefer the server's redacted copy; fall back to the on-device export
-    // (the server only makes its own copy when OCR is available).
+    // Prefer the server's redacted copy; fall back to the on-device export.
     const previewUrl = receipt ? (receipt.redactedUrl ?? receipt.localPreviewUrl) : null;
     return (
       <div className="form-card">
