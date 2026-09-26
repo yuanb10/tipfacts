@@ -71,7 +71,6 @@ function EvidenceThumb({ evidence }: { evidence: PublicEvidence }) {
         src={evidence.redactedPath}
         alt={evidence.type === 'receipt' ? 'Redacted receipt photo' : 'Redacted tip screen photo'}
         className="report-photo"
-        style={{ maxWidth: 160, marginTop: 4 }}
         loading="lazy"
       />
     </a>
@@ -96,7 +95,7 @@ function AskPayCard({ detail }: { detail: VenueDetail }) {
             <p className="askpay-num">{fmtPct(ask)}</p>
             <p className="askpay-sub">lowest preset on the tip screen</p>
             {base === 'post-tax' && (
-              <p className="askpay-base warn">⚠️ on the after-tax total</p>
+              <p className="askpay-base warn">⚠️ after-tax total</p>
             )}
             {base === 'pre-tax' && (
               <p className="askpay-base">on the pre-tax total</p>
@@ -222,6 +221,7 @@ function ScoreSection({ detail }: { detail: VenueDetail }) {
               </span>
               {c.evidenceIds.length > 0 && (
                 <span
+                  className="score-evidence"
                   style={{
                     gridColumn: '1 / -1',
                     display: 'flex',
@@ -344,9 +344,9 @@ export default async function VenuePage({ params }: { params: Promise<{ id: stri
             Redacted photos only — personal data was blacked out and confirmed by the
             uploader.
           </p>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+          <div className="evidence-strip">
             {detail.evidence.map((e) => (
-              <div key={e.id} style={{ maxWidth: 200 }}>
+              <div key={e.id} className="evidence-item">
                 <EvidenceThumb evidence={e} />
                 <div className="report-meta" style={{ marginTop: 4 }}>
                   {e.type === 'receipt' ? 'Receipt' : 'Tip screen'} · {fmtDate(e.createdAt)}

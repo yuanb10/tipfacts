@@ -722,6 +722,34 @@ p {
   border-radius: 999px;
   padding: 3px 10px;
   color: var(--ink);
+  white-space: nowrap;
+}
+
+/* Evidence as a horizontal snap strip — one swipeable row, not a stack. */
+.evidence-strip {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  scroll-snap-type: x mandatory;
+  margin: 12px -18px 0;
+  padding: 0 18px 8px;
+}
+
+.evidence-item {
+  flex: 0 0 auto;
+  width: 168px;
+  scroll-snap-align: start;
+}
+
+.evidence-item .report-photo {
+  width: 100%;
+  margin-top: 0;
+}
+
+/* Thumbnails inside the score breakdown stay small. */
+.score-evidence .report-photo {
+  width: 120px;
+  margin-top: 0;
 }
 
 /* --- The fine print: quiet label/value rows --- */
